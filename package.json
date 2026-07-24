@@ -24,6 +24,7 @@
   },
   "scripts": {
     "start": "node server.mjs",
+    "demo": "node scripts/demo.mjs",
     "icons": "node scripts/icons.mjs"
   },
   "devDependencies": {
