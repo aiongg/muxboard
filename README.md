@@ -10,7 +10,7 @@ a fast way to **see / start / poke / stop** those sessions from that same phone.
 Muxboard is the session manager, not another terminal.
 
 <p align="center">
-  <img src="docs/dashboard-dark.png" alt="Session cards showing a working session and one that needs input" width="290">
+  <img src="docs/dashboard.png" alt="Session cards showing a working session and one that needs input" width="290">
   <img src="docs/send-sheet.png" alt="Send sheet with user-defined shortcut chips" width="290">
 </p>
 
@@ -73,8 +73,7 @@ your phone* below.
 ## Configure
 
 <p align="center">
-  <img src="docs/settings.png" alt="Settings sheet with folders, shortcuts, and security sections" width="290">
-  <img src="docs/dashboard-light.png" alt="The same dashboard in light theme" width="290">
+  <img src="docs/settings.gif" alt="Settings sheet cycling through its folders, shortcuts, and security sections" width="290">
 </p>
 
 Muxboard follows your system light/dark theme; the terminal screens stay dark in
