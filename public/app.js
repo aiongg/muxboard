@@ -36,7 +36,11 @@ async function api(path, opts = {}) {
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (!res.ok) {
+      const err = new Error(data.error || `HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
     return data;
   } finally {
     clearTimeout(t);
@@ -60,8 +64,10 @@ async function poll() {
     state = await api('/api/state');
     failures = 0;
     hideOffline();
+    showLogin(false);
     render();
-  } catch {
+  } catch (e) {
+    if (e.status === 401) return showLogin(true); // locked: stop polling until unlocked
     failures++;
     if (!state || failures >= 2) showOffline();
   }
@@ -86,6 +92,49 @@ function hideOffline() {
   localStorage.setItem('muxboard.host', state.host);
 }
 $('#retryBtn').addEventListener('click', poll);
+
+// -------------------------------------------------------------------- login
+
+const loginEl = $('#login');
+
+function showLogin(on) {
+  if (loginEl.hidden !== on) return; // already in the right state
+  loginEl.hidden = !on;
+  if (on) {
+    clearTimeout(pollTimer);
+    offlineEl.hidden = true;
+    $('#loginStatus').textContent = '';
+    $('#loginPass').value = '';
+    $('#loginPass').focus();
+  }
+}
+
+$('#loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const password = $('#loginPass').value;
+  if (!password) return;
+  $('#loginStatus').textContent = 'checking…';
+  try {
+    await api('/api/login', { method: 'POST', body: { password } });
+    $('#loginPass').value = '';
+    showLogin(false);
+    poll();
+  } catch (err) {
+    $('#loginStatus').textContent = err.message;
+    $('#loginPass').select();
+  }
+});
+
+$('#logoutBtn').addEventListener('click', async () => {
+  try {
+    await api('/api/logout', { method: 'POST' });
+    state = null;
+    closeSheets();
+    showLogin(true);
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
 
 // ----------------------------------------------------------------- render
 
@@ -463,6 +512,7 @@ function renderSettings() {
 
 function openSettings() {
   renderSettings();
+  $('#logoutRow').hidden = !state?.auth?.enabled;
   openSheet(settingsSheet);
 }
 

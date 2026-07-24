@@ -103,7 +103,24 @@
     </form>
     <p class="set-hint">Chips appear in the send sheet. Use <code>@enter</code> or
       <code>@esc</code> as the value to send a keypress instead of text.</p>
+
+    <div id="logoutRow" hidden>
+      <h3 class="set-head">Session</h3>
+      <button id="logoutBtn" class="btn small danger">log out</button>
+    </div>
   </section>
+
+  <div id="login" class="offline" hidden>
+    <img src="/icons/icon.svg" alt="" class="offline-mark">
+    <h1>Locked</h1>
+    <p>This Muxboard is password protected.</p>
+    <form id="loginForm" class="loginform">
+      <input id="loginPass" type="password" placeholder="password" autocomplete="current-password"
+             enterkeyhint="go" aria-label="Password">
+      <button class="cta" type="submit">unlock</button>
+    </form>
+    <p class="offline-status" id="loginStatus"></p>
+  </div>
 
   <div id="offline" class="offline" hidden>
     <img src="/icons/icon.svg" alt="" class="offline-mark">

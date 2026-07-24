@@ -9,6 +9,7 @@ import { readFile, readdir, stat, mkdir, writeFile } from 'node:fs/promises';
 import { readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, extname, basename, sep } from 'node:path';
 import { homedir, hostname } from 'node:os';
+import { scryptSync, randomBytes, createHmac, timingSafeEqual } from 'node:crypto';
 
 const exec = promisify(execFile);
 
@@ -21,8 +22,89 @@ const STATE_DIR = join(HOME, '.local/state/muxboard');
 const SNAPSHOT_FILE = join(STATE_DIR, 'snapshot.json');
 const CONFIG_DIR = join(process.env.XDG_CONFIG_HOME || join(HOME, '.config'), 'muxboard');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
+const AUTH_FILE = join(CONFIG_DIR, 'auth.json');
 const PUBLIC_DIR = join(new URL('.', import.meta.url).pathname, 'public');
 const HOSTNAME = hostname();
+
+// ---------------------------------------------------------------------- auth
+// A password is optional: with no auth.json the server behaves as if this
+// section did not exist. When one is set, every /api/ route needs a session
+// cookie. The hash lives outside config.json because that file is handed to
+// the client on every poll.
+
+const SESSION_COOKIE = 'muxboard_session';
+const SESSION_MAX_AGE = 30 * 24 * 3600 * 1000;
+
+let authCache = { mtimeMs: -1, value: null };
+function loadAuth() {
+  let st;
+  try {
+    st = statSync(AUTH_FILE);
+  } catch {
+    authCache = { mtimeMs: -1, value: null };
+    return null;
+  }
+  if (st.mtimeMs !== authCache.mtimeMs) {
+    let value = null;
+    try {
+      const raw = JSON.parse(readFileSync(AUTH_FILE, 'utf8'));
+      if (raw?.hash && raw?.salt && raw?.secret) value = raw;
+    } catch { /* unreadable or malformed: treated as no password */ }
+    authCache = { mtimeMs: st.mtimeMs, value };
+  }
+  return authCache.value;
+}
+
+function checkPassword(password, auth) {
+  let derived;
+  try {
+    derived = scryptSync(String(password), Buffer.from(auth.salt, 'hex'), 32,
+      { N: auth.N || 32768, r: auth.r || 8, p: auth.p || 1, maxmem: 128 * 1024 * 1024 });
+  } catch {
+    return false;
+  }
+  const expected = Buffer.from(auth.hash, 'hex');
+  return derived.length === expected.length && timingSafeEqual(derived, expected);
+}
+
+// Sessions are stateless and signed, so a service restart doesn't sign anyone
+// out. Changing the password rotates the secret, which invalidates them all.
+const signSession = (auth, issued, nonce) =>
+  createHmac('sha256', Buffer.from(auth.secret, 'hex')).update(`${issued}.${nonce}`).digest('hex');
+
+function issueSession(auth) {
+  const issued = Date.now();
+  const nonce = randomBytes(12).toString('hex');
+  return `${issued}.${nonce}.${signSession(auth, issued, nonce)}`;
+}
+
+function validSession(token, auth) {
+  const [issued, nonce, mac] = String(token || '').split('.');
+  if (!issued || !nonce || !mac) return false;
+  const age = Date.now() - Number(issued);
+  if (!Number.isFinite(age) || age < 0 || age > SESSION_MAX_AGE) return false;
+  const want = Buffer.from(signSession(auth, Number(issued), nonce), 'hex');
+  const got = Buffer.from(mac, 'hex');
+  return want.length === got.length && timingSafeEqual(want, got);
+}
+
+function readCookie(req, name) {
+  for (const part of String(req.headers.cookie || '').split(';')) {
+    const eq = part.indexOf('=');
+    if (eq > 0 && part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return null;
+}
+
+function sessionCookie(req, token) {
+  const https = req.headers['x-forwarded-proto'] === 'https' || !!req.socket.encrypted;
+  return `${SESSION_COOKIE}=${token}; Path=/; Max-Age=${SESSION_MAX_AGE / 1000}; HttpOnly; SameSite=Strict` +
+    (https ? '; Secure' : '');
+}
+
+// Guessing is throttled process-wide; this is a single-user password.
+let loginFailures = 0;
+let lockedUntil = 0;
 
 // -------------------------------------------------------------- user config
 // Everything a person tailors — which folders to offer, which send-key chips
@@ -530,7 +612,44 @@ const server = createServer(async (req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD' && !sameOrigin(req)) {
       return json(res, 403, { error: 'cross-site request blocked' });
     }
+    // The app shell is public so it can render a login screen; the API is not.
     if (!path.startsWith('/api/')) return await serveStatic(res, path);
+
+    const auth = loadAuth();
+
+    if (req.method === 'GET' && path === '/api/auth') {
+      return json(res, 200, {
+        enabled: !!auth,
+        authenticated: !auth || validSession(readCookie(req, SESSION_COOKIE), auth),
+      });
+    }
+
+    if (req.method === 'POST' && path === '/api/login') {
+      if (!auth) return json(res, 400, { error: 'no password is set' });
+      const wait = lockedUntil - Date.now();
+      if (wait > 0) return json(res, 429, { error: `too many attempts — wait ${Math.ceil(wait / 1000)}s` });
+      const body = await readBody(req);
+      if (!checkPassword(body.password ?? '', auth)) {
+        loginFailures++;
+        if (loginFailures >= 3) {
+          lockedUntil = Date.now() + Math.min(60_000, 250 * 2 ** (loginFailures - 3));
+        }
+        return json(res, 401, { error: 'wrong password' });
+      }
+      loginFailures = 0;
+      lockedUntil = 0;
+      res.setHeader('Set-Cookie', sessionCookie(req, issueSession(auth)));
+      return json(res, 200, { ok: true });
+    }
+
+    if (req.method === 'POST' && path === '/api/logout') {
+      res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`);
+      return json(res, 200, { ok: true });
+    }
+
+    if (auth && !validSession(readCookie(req, SESSION_COOKIE), auth)) {
+      return json(res, 401, { error: 'authentication required' });
+    }
 
     if (req.method === 'GET' && path === '/api/state') {
       const { tmuxRunning, sessions } = await listSessions();
@@ -551,6 +670,7 @@ const server = createServer(async (req, res) => {
         folders: await listFolders(sessions, cfg),
         restore: await restoreOffer(tmuxRunning, sessions),
         config: cfg,
+        auth: { enabled: !!auth },
         claude: {
           version: current,
           updating: update.running,

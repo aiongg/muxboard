@@ -32,7 +32,9 @@ misbehaves after a Claude Code update, that's where to look.
 
 User-tailored settings (repo roots, send-key shortcuts) belong in
 `~/.config/muxboard/config.json`, never hardcoded — the app has a settings
-sheet for editing them.
+sheet for editing them. That file is sent to the client on every poll, so
+nothing secret may go in it: the optional password hash and session secret live
+in `auth.json` beside it, mode 0600, and are never serialised into a response.
 
 ## Testing UI changes
 

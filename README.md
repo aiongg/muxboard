@@ -115,6 +115,26 @@ Environment overrides:
 
 Session state is snapshotted to `~/.local/state/muxboard/snapshot.json`.
 
+## Password (optional)
+
+Muxboard asks for nothing by default. To require a password:
+
+```sh
+node scripts/password.mjs           # prompts twice, stores the hash
+node scripts/password.mjs --remove  # back to no password
+```
+
+Every device then gets a login screen. Sessions last 30 days and survive
+service restarts; **log out** appears in settings. Running the script again
+changes the password and signs out every device. Changes take effect
+immediately — no restart needed.
+
+The password is stored as a scrypt hash in `~/.config/muxboard/auth.json`
+(mode `0600`), deliberately not in `config.json`, which is sent to the browser
+on every poll. Session cookies are HMAC-signed with a secret that rotates on
+each password change, and are `HttpOnly` + `SameSite=Strict` (plus `Secure`
+when Muxboard is reached over HTTPS). Failed logins are throttled.
+
 ## Run it as a service
 
 ```ini
@@ -175,10 +195,12 @@ will install it as an app with no extra setup.
 
 ## Security
 
-**There is no authentication.** Anyone who can reach the port can start Claude
-Code in your files, send input to your sessions, and read your transcripts.
+**There is no authentication unless you set a password** (see above). Without
+one, anyone who can reach the port can start Claude Code in your files, send
+input to your sessions, and read your transcripts.
 
-Keep `HOST` on loopback and put Muxboard behind something that limits who
+A password is worth setting, but it is a lock on the door rather than a moat:
+keep `HOST` on loopback and put Muxboard behind something that limits who
 can reach it — a tailnet, a VPN, or an authenticating proxy. Do not expose it
 to the public internet.
 

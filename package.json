@@ -25,6 +25,7 @@
   "scripts": {
     "start": "node server.mjs",
     "demo": "node scripts/demo.mjs",
+    "password": "node scripts/password.mjs",
     "icons": "node scripts/icons.mjs"
   },
   "devDependencies": {
