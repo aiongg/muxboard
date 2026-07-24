@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Muxboard</title>
+  <meta name="theme-color" content="#131009" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f3ecdd" media="(prefers-color-scheme: light)">
+  <meta name="description" content="Manage Claude Code sessions running in tmux, from your phone.">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <header class="top">
+    <div class="wordmark">
+      <img class="mark" src="/icons/icon.svg" alt="">
+      <span>mux<b>board</b></span>
+    </div>
+    <div class="top-right">
+      <button id="updateBtn" class="iconbtn" aria-label="Update Claude Code">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3v4.5h-4.5"/>
+        </svg>
+      </button>
+      <button class="hostchip" id="settingsBtn" aria-label="Settings">
+        <span class="dot" id="connDot" aria-hidden="true"></span>
+        <span id="hostName">connecting…</span>
+        <svg class="hostchip-cog" width="12" height="12" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true">
+          <line x1="3" y1="8" x2="21" y2="8"/>
+          <line x1="3" y1="16" x2="21" y2="16"/>
+          <circle cx="9" cy="8" r="2.6" fill="var(--panel)"/>
+          <circle cx="15" cy="16" r="2.6" fill="var(--panel)"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="main">
+    <section id="updateBanner" class="restore" hidden></section>
+    <section id="restoreBanner" class="restore" hidden></section>
+    <section id="cards" class="cards" aria-live="polite"></section>
+    <section id="empty" class="empty" hidden>
+      <p class="empty-glyph">❯ _</p>
+      <p>No sessions running.</p>
+      <p class="empty-sub">Start one below — it appears in the Claude app within seconds.</p>
+    </section>
+  </main>
+
+  <div class="bottombar">
+    <button id="newBtn" class="cta">+ new session</button>
+  </div>
+
+  <div id="backdrop" class="backdrop" hidden></div>
+
+  <section id="newSheet" class="sheet" role="dialog" aria-label="New session" hidden>
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <h2 class="sheet-title">New session</h2>
+    <label class="toggle">
+      <input type="checkbox" id="resumeToggle">
+      <span class="toggle-track" aria-hidden="true"></span>
+      <span>Resume the folder's last conversation</span>
+    </label>
+    <div id="folderList" class="folders"></div>
+    <form class="custompath" id="customForm">
+      <input id="customDir" placeholder="~/any/other/folder" autocomplete="off" spellcheck="false" enterkeyhint="go">
+      <button type="submit" class="btn small">open</button>
+    </form>
+  </section>
+
+  <section id="sendSheet" class="sheet" role="dialog" aria-label="Send to session" hidden>
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <h2 class="sheet-title">Send to <span id="sendTarget"></span></h2>
+    <div class="chips" id="chips"></div>
+    <textarea id="sendText" rows="3" placeholder="Message or /command…" autocomplete="off"></textarea>
+    <button id="sendGo" class="cta">send</button>
+  </section>
+
+  <section id="settingsSheet" class="sheet" role="dialog" aria-label="Settings" hidden>
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <h2 class="sheet-title">Settings</h2>
+
+    <h3 class="set-head">Folders offered for new sessions</h3>
+    <div id="rootList" class="setlist"></div>
+    <form class="custompath" id="rootForm">
+      <input id="rootInput" placeholder="~/projects" autocomplete="off" spellcheck="false" enterkeyhint="done">
+      <button type="submit" class="btn small">add</button>
+    </form>
+
+    <h3 class="set-head">Send shortcuts</h3>
+    <div id="shortcutList" class="setlist"></div>
+    <form class="scform" id="shortcutForm">
+      <input id="scLabel" placeholder="label" autocomplete="off" spellcheck="false" maxlength="24">
+      <input id="scSend" placeholder="/command, text, @enter or @esc" autocomplete="off" spellcheck="false" enterkeyhint="done">
+      <button type="submit" class="btn small">add</button>
+    </form>
+    <p class="set-hint">Chips appear in the send sheet. Use <code>@enter</code> or
+      <code>@esc</code> as the value to send a keypress instead of text.</p>
+  </section>
+
+  <div id="offline" class="offline" hidden>
+    <img src="/icons/icon.svg" alt="" class="offline-mark">
+    <h1 id="offlineTitle">Server unreachable</h1>
+    <p>If you reach this machine over Tailscale or a VPN, check that it's
+      connected — Muxboard reconnects on its own.</p>
+    <p class="offline-status" id="offlineStatus">retrying…</p>
+    <button id="retryBtn" class="cta">retry now</button>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

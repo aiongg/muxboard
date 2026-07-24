@@ -1,0 +1,32 @@
+{
+  "name": "muxboard",
+  "version": "1.0.0",
+  "description": "Mobile-first PWA for managing Claude Code sessions that live in tmux",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aiongg/muxboard.git"
+  },
+  "homepage": "https://github.com/aiongg/muxboard#readme",
+  "bugs": {
+    "url": "https://github.com/aiongg/muxboard/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "tmux",
+    "pwa",
+    "dashboard",
+    "self-hosted"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "icons": "node scripts/icons.mjs"
+  },
+  "devDependencies": {
+    "sharp": "^0.35.3"
+  }
+}

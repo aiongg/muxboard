@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Muxboard mark: a tmux split — terminal pane (caret) beside an agent pane (spark) -->
+  <rect width="512" height="512" rx="104" fill="#131009"/>
+  <rect x="60" y="60" width="392" height="392" rx="44" fill="none" stroke="#F0A93C" stroke-width="18"/>
+  <line x1="298" y1="60" x2="298" y2="452" stroke="#F0A93C" stroke-width="18"/>
+  <polyline points="138,196 208,256 138,316" fill="none" stroke="#F0A93C" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  <g stroke="#F0A93C" stroke-width="24" stroke-linecap="round">
+    <line x1="375" y1="210" x2="375" y2="302"/>
+    <line x1="329" y1="256" x2="421" y2="256"/>
+    <line x1="343" y1="224" x2="407" y2="288"/>
+    <line x1="407" y1="224" x2="343" y2="288"/>
+  </g>
+</svg>
