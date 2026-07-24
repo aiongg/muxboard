@@ -117,17 +117,23 @@ Session state is snapshotted to `~/.local/state/muxboard/snapshot.json`.
 
 ## Password (optional)
 
-Muxboard asks for nothing by default. To require a password:
+Muxboard asks for nothing by default. Set a password from **settings** in the
+app, or from a terminal:
 
 ```sh
 node scripts/password.mjs           # prompts twice, stores the hash
 node scripts/password.mjs --remove  # back to no password
 ```
 
-Every device then gets a login screen. Sessions last 30 days and survive
-service restarts; **log out** appears in settings. Running the script again
-changes the password and signs out every device. Changes take effect
+Every other device then gets a login screen; the one that set it stays signed
+in. Sessions last 30 days and survive service restarts, and **log out** sits
+next to the password controls. Changing or removing the password always
+requires the current one, and signs out every device. Changes take effect
 immediately — no restart needed.
+
+Set it via the prompt rather than as a shell argument: arguments land in your
+shell history, and — since Muxboard streams terminal screens — in its own
+session peeks.
 
 The password is stored as a scrypt hash in `~/.config/muxboard/auth.json`
 (mode `0600`), deliberately not in `config.json`, which is sent to the browser
@@ -209,6 +215,10 @@ POST from any page to `localhost:8800` without asking anyone's permission, so
 requests carrying a foreign `Origin` or `Sec-Fetch-Site` are refused. That
 closes the drive-by path where a web page you visit types into your sessions;
 it is not a substitute for putting a real access control in front of Muxboard.
+
+Terminal screens are transmitted verbatim, so anything visible in a session —
+including a secret someone typed into it — is served to whoever can reach
+Muxboard.
 
 Sessions run with your user's privileges and `roots` are confined to `$HOME`,
 but that is a guardrail against mistakes, not a sandbox: a session started in a

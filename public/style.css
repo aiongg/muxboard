@@ -323,6 +323,18 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .scform input::placeholder { color: var(--muted); }
 .scform input:focus { outline: 2px solid var(--amber); border-color: transparent; }
 
+.pwform { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.pwform input {
+  min-height: 44px;
+  font: 14px var(--mono); color: var(--cream);
+  background: var(--panel-up); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0 12px;
+}
+.pwform input::placeholder { color: var(--muted); }
+.pwform input:focus { outline: 2px solid var(--amber); border-color: transparent; }
+.pwactions { display: flex; gap: 8px; flex-wrap: wrap; }
+.pwactions .btn { flex: 1; min-width: 96px; }
+
 .custompath { display: flex; gap: 8px; margin-top: 12px; border-top: 1px solid var(--line); padding-top: 14px; }
 .custompath input {
   flex: 1; min-width: 0; min-height: 44px;

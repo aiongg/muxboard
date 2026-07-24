@@ -104,10 +104,21 @@
     <p class="set-hint">Chips appear in the send sheet. Use <code>@enter</code> or
       <code>@esc</code> as the value to send a keypress instead of text.</p>
 
-    <div id="logoutRow" hidden>
-      <h3 class="set-head">Session</h3>
-      <button id="logoutBtn" class="btn small danger">log out</button>
-    </div>
+    <h3 class="set-head">Password</h3>
+    <p class="set-hint" id="pwState"></p>
+    <form class="pwform" id="pwForm">
+      <input id="pwCurrent" type="password" placeholder="current password"
+             autocomplete="current-password" aria-label="Current password" hidden>
+      <input id="pwNew" type="password" placeholder="new password"
+             autocomplete="new-password" aria-label="New password">
+      <input id="pwRepeat" type="password" placeholder="repeat new password"
+             autocomplete="new-password" aria-label="Repeat new password">
+      <div class="pwactions">
+        <button type="submit" class="btn small" id="pwSubmit">set password</button>
+        <button type="button" class="btn small danger" id="pwRemove" hidden>remove</button>
+        <button type="button" class="btn small" id="logoutBtn" hidden>log out</button>
+      </div>
+    </form>
   </section>
 
   <div id="login" class="offline" hidden>

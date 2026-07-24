@@ -5,7 +5,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
-import { readFile, readdir, stat, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir, stat, mkdir, writeFile, rm } from 'node:fs/promises';
 import { readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, extname, basename, sep } from 'node:path';
 import { homedir, hostname } from 'node:os';
@@ -102,9 +102,39 @@ function sessionCookie(req, token) {
     (https ? '; Secure' : '');
 }
 
+const SCRYPT = { N: 32768, r: 8, p: 1 };
+
+function makeAuthRecord(password) {
+  const salt = randomBytes(16);
+  return {
+    alg: 'scrypt',
+    ...SCRYPT,
+    salt: salt.toString('hex'),
+    hash: scryptSync(password, salt, 32, { ...SCRYPT, maxmem: 128 * 1024 * 1024 }).toString('hex'),
+    secret: randomBytes(32).toString('hex'),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function writeAuth(record) {
+  await mkdir(CONFIG_DIR, { recursive: true });
+  await writeFile(AUTH_FILE, JSON.stringify(record, null, 2) + '\n', { mode: 0o600 });
+  authCache = { mtimeMs: -1, value: null };
+}
+
 // Guessing is throttled process-wide; this is a single-user password.
 let loginFailures = 0;
 let lockedUntil = 0;
+
+function throttleCheck() {
+  const wait = lockedUntil - Date.now();
+  if (wait > 0) throw httpError(429, `too many attempts — wait ${Math.ceil(wait / 1000)}s`);
+}
+
+function noteFailure() {
+  loginFailures++;
+  if (loginFailures >= 3) lockedUntil = Date.now() + Math.min(60_000, 250 * 2 ** (loginFailures - 3));
+}
 
 // -------------------------------------------------------------- user config
 // Everything a person tailors — which folders to offer, which send-key chips
@@ -626,14 +656,10 @@ const server = createServer(async (req, res) => {
 
     if (req.method === 'POST' && path === '/api/login') {
       if (!auth) return json(res, 400, { error: 'no password is set' });
-      const wait = lockedUntil - Date.now();
-      if (wait > 0) return json(res, 429, { error: `too many attempts — wait ${Math.ceil(wait / 1000)}s` });
+      throttleCheck();
       const body = await readBody(req);
       if (!checkPassword(body.password ?? '', auth)) {
-        loginFailures++;
-        if (loginFailures >= 3) {
-          lockedUntil = Date.now() + Math.min(60_000, 250 * 2 ** (loginFailures - 3));
-        }
+        noteFailure();
         return json(res, 401, { error: 'wrong password' });
       }
       loginFailures = 0;
@@ -649,6 +675,37 @@ const server = createServer(async (req, res) => {
 
     if (auth && !validSession(readCookie(req, SESSION_COOKIE), auth)) {
       return json(res, 401, { error: 'authentication required' });
+    }
+
+    // Set, change, or clear the password from the app. Claiming an unprotected
+    // Muxboard needs nothing extra — whoever can reach it can already drive it
+    // — but touching an existing password always requires that password, so a
+    // borrowed session alone can't lock the owner out.
+    if (req.method === 'POST' && path === '/api/password') {
+      const body = await readBody(req);
+      if (auth) {
+        throttleCheck();
+        if (!checkPassword(body.current ?? '', auth)) {
+          noteFailure();
+          return json(res, 401, { error: 'wrong current password' });
+        }
+        loginFailures = 0;
+        lockedUntil = 0;
+      }
+      if (body.remove) {
+        if (!auth) return json(res, 400, { error: 'no password is set' });
+        await rm(AUTH_FILE, { force: true });
+        authCache = { mtimeMs: -1, value: null };
+        res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`);
+        return json(res, 200, { enabled: false });
+      }
+      const next = String(body.password ?? '');
+      if (next.length < 8) return json(res, 400, { error: 'password must be at least 8 characters' });
+      const record = makeAuthRecord(next);
+      await writeAuth(record);
+      // Keep the device that just set it signed in; every other one is out.
+      res.setHeader('Set-Cookie', sessionCookie(req, issueSession(record)));
+      return json(res, 200, { enabled: true });
     }
 
     if (req.method === 'GET' && path === '/api/state') {

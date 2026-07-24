@@ -125,6 +125,52 @@ $('#loginForm').addEventListener('submit', async e => {
   }
 });
 
+// Reflect auth state wherever it shows: the password section swaps between
+// "claim this instance" and "change or remove the existing password".
+function renderAuth() {
+  const on = !!state?.auth?.enabled;
+  $('#pwState').textContent = on
+    ? 'A password is required to use this Muxboard.'
+    : 'No password — anyone who can reach this Muxboard can use it.';
+  $('#pwCurrent').hidden = !on;
+  $('#pwRemove').hidden = !on;
+  $('#logoutBtn').hidden = !on;
+  $('#pwSubmit').textContent = on ? 'change password' : 'set password';
+}
+
+function clearPasswordFields() {
+  for (const id of ['#pwCurrent', '#pwNew', '#pwRepeat']) $(id).value = '';
+}
+
+$('#pwForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const next = $('#pwNew').value;
+  if (next !== $('#pwRepeat').value) return toast("passwords don't match", true);
+  if (next.length < 8) return toast('password must be at least 8 characters', true);
+  try {
+    await api('/api/password', {
+      method: 'POST',
+      body: { password: next, current: $('#pwCurrent').value },
+    });
+    clearPasswordFields();
+    toast('password saved — other devices must log in again');
+    poll();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$('#pwRemove').addEventListener('click', async () => {
+  try {
+    await api('/api/password', { method: 'POST', body: { remove: true, current: $('#pwCurrent').value } });
+    clearPasswordFields();
+    toast('password removed');
+    poll();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
 $('#logoutBtn').addEventListener('click', async () => {
   try {
     await api('/api/logout', { method: 'POST' });
@@ -144,6 +190,8 @@ function render() {
   renderCards();
   renderFolders();
   renderChips();
+  // Only the labels, never the list DOM — a poll must not disturb the sheet.
+  if (!settingsSheet.hidden) renderAuth();
 }
 
 // ------------------------------------------------------------ claude update
@@ -512,7 +560,8 @@ function renderSettings() {
 
 function openSettings() {
   renderSettings();
-  $('#logoutRow').hidden = !state?.auth?.enabled;
+  renderAuth();
+  clearPasswordFields();
   openSheet(settingsSheet);
 }
 
