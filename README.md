@@ -185,6 +185,13 @@ a real certificate — installable as a PWA, no port forwarding, nothing public.
 If something else already owns `:443` on that host, use a distinct port instead:
 `tailscale serve --bg --https=8443 8800`.
 
+**Disable key expiry on the host.** Tailscale node keys expire after 180 days by
+default, and an expired key drops the machine off the tailnet until someone
+reauthenticates it at a terminal — which is exactly what you can't do when the
+box is a VPS you reach through Muxboard. In the admin console, open **Machines**,
+find the host, and choose **Disable key expiry** from its menu. Tailscale
+recommends this for always-on servers and hard-to-reach devices.
+
 **Your own domain behind a reverse proxy.** If you already run one, point a
 hostname at `127.0.0.1:8800` and restrict it to your VPN — for example with
 Caddy:
