@@ -87,38 +87,51 @@
     <div class="sheet-grip" aria-hidden="true"></div>
     <h2 class="sheet-title">Settings</h2>
 
-    <h3 class="set-head">Folders offered for new sessions</h3>
-    <div id="rootList" class="setlist"></div>
-    <form class="custompath" id="rootForm">
-      <input id="rootInput" placeholder="~/projects" autocomplete="off" spellcheck="false" enterkeyhint="done">
-      <button type="submit" class="btn small">add</button>
-    </form>
+    <div class="segments" id="segments" role="tablist" aria-label="Settings sections">
+      <button class="seg on" data-tab="folders" role="tab" aria-selected="true">folders</button>
+      <button class="seg" data-tab="shortcuts" role="tab" aria-selected="false">shortcuts</button>
+      <button class="seg" data-tab="security" role="tab" aria-selected="false">security</button>
+    </div>
 
-    <h3 class="set-head">Send shortcuts</h3>
-    <div id="shortcutList" class="setlist"></div>
-    <form class="scform" id="shortcutForm">
-      <input id="scLabel" placeholder="label" autocomplete="off" spellcheck="false" maxlength="24">
-      <input id="scSend" placeholder="/command, text, @enter or @esc" autocomplete="off" spellcheck="false" enterkeyhint="done">
-      <button type="submit" class="btn small">add</button>
-    </form>
-    <p class="set-hint">Chips appear in the send sheet. Use <code>@enter</code> or
-      <code>@esc</code> as the value to send a keypress instead of text.</p>
+    <div class="panel" data-panel="folders" role="tabpanel">
+      <div id="rootList" class="setlist"></div>
+      <form class="addrow" id="rootForm">
+        <input id="rootInput" placeholder="~/another/folder" autocomplete="off" spellcheck="false" enterkeyhint="done">
+        <button type="submit" class="btn small">add</button>
+      </form>
+      <p class="set-hint">Subfolders of these appear when you start a session.</p>
+    </div>
 
-    <h3 class="set-head">Password</h3>
-    <p class="set-hint" id="pwState"></p>
-    <form class="pwform" id="pwForm">
-      <input id="pwCurrent" type="password" placeholder="current password"
-             autocomplete="current-password" aria-label="Current password" hidden>
-      <input id="pwNew" type="password" placeholder="new password"
-             autocomplete="new-password" aria-label="New password">
-      <input id="pwRepeat" type="password" placeholder="repeat new password"
-             autocomplete="new-password" aria-label="Repeat new password">
-      <div class="pwactions">
-        <button type="submit" class="btn small" id="pwSubmit">set password</button>
-        <button type="button" class="btn small danger" id="pwRemove" hidden>remove</button>
-        <button type="button" class="btn small" id="logoutBtn" hidden>log out</button>
-      </div>
-    </form>
+    <div class="panel" data-panel="shortcuts" role="tabpanel" hidden>
+      <div id="shortcutList" class="setlist"></div>
+      <form class="addrow wrap" id="shortcutForm">
+        <input id="scLabel" placeholder="label" autocomplete="off" spellcheck="false" maxlength="24">
+        <input id="scSend" placeholder="/command, text, @enter or @esc" autocomplete="off" spellcheck="false" enterkeyhint="done">
+        <button type="submit" class="btn small">add</button>
+      </form>
+      <p class="set-hint">Use <code>@enter</code> or <code>@esc</code> for a keypress.</p>
+    </div>
+
+    <div class="panel" data-panel="security" role="tabpanel" hidden>
+      <p class="set-hint" id="pwState"></p>
+      <form class="pwform" id="pwForm">
+        <div class="pwfield" id="pwCurrentField" hidden>
+          <input id="pwCurrent" type="password" placeholder="current password"
+                 autocomplete="current-password" aria-label="Current password">
+          <button type="button" class="reveal" data-reveal="pwCurrent">show</button>
+        </div>
+        <div class="pwfield">
+          <input id="pwNew" type="password" placeholder="new password"
+                 autocomplete="new-password" aria-label="New password">
+          <button type="button" class="reveal" data-reveal="pwNew">show</button>
+        </div>
+        <button type="submit" class="btn" id="pwSubmit">set password</button>
+        <div class="pwactions">
+          <button type="button" class="btn small danger" id="pwRemove" hidden>remove password</button>
+          <button type="button" class="btn small" id="logoutBtn" hidden>log out</button>
+        </div>
+      </form>
+    </div>
   </section>
 
   <div id="login" class="offline" hidden>

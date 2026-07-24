@@ -73,7 +73,7 @@ your phone* below.
 ## Configure
 
 <p align="center">
-  <img src="docs/settings.png" alt="Settings sheet listing folder roots and shortcuts" width="290">
+  <img src="docs/settings.png" alt="Settings sheet with folders, shortcuts, and security sections" width="290">
   <img src="docs/dashboard-light.png" alt="The same dashboard in light theme" width="290">
 </p>
 
@@ -121,7 +121,7 @@ Muxboard asks for nothing by default. Set a password from **settings** in the
 app, or from a terminal:
 
 ```sh
-node scripts/password.mjs           # prompts twice, stores the hash
+node scripts/password.mjs           # prompts, stores the hash
 node scripts/password.mjs --remove  # back to no password
 ```
 

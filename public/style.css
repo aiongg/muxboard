@@ -288,16 +288,28 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 /* ------------------------------------------------------- settings & lists */
 
-.set-head {
-  font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--muted); margin: 18px 0 8px;
+/* One sheet, three short panels — a segmented switch instead of a long scroll. */
+.segments {
+  display: flex; gap: 4px;
+  background: var(--panel-up); border: 1px solid var(--line);
+  border-radius: 12px; padding: 4px; margin-bottom: 14px;
 }
-.set-head:first-of-type { margin-top: 4px; }
+.seg {
+  flex: 1; min-height: 40px; border-radius: 9px;
+  font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted);
+  transition: background .12s ease, color .12s ease;
+}
+.seg.on { background: var(--amber); color: var(--on-amber); font-weight: 700; }
+.seg:not(.on):active { color: var(--cream); }
+
+.panel { display: flex; flex-direction: column; }
+
 .setlist { display: flex; flex-direction: column; }
 .setrow {
   display: flex; align-items: center; gap: 10px;
-  min-height: 52px; padding: 6px 2px;
-  border-top: 1px solid var(--line);
+  min-height: 44px; padding: 3px 2px;
+  border-bottom: 1px solid var(--line);
   font-size: 14px;
 }
 .setrow-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -311,31 +323,41 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   background: var(--panel-up); border-radius: 4px; padding: 1px 5px;
 }
 
-.scform { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.scform input {
-  min-height: 44px; min-width: 0;
+.addrow { display: flex; gap: 8px; margin-top: 12px; }
+.addrow.wrap { flex-wrap: wrap; }
+.addrow input {
+  flex: 1; min-width: 0; min-height: 48px;
   font: 14px var(--mono); color: var(--cream);
   background: var(--panel-up); border: 1px solid var(--line); border-radius: 10px;
   padding: 0 12px;
 }
-.scform #scLabel { flex: 1 1 30%; }
-.scform #scSend { flex: 2 1 45%; }
-.scform input::placeholder { color: var(--muted); }
-.scform input:focus { outline: 2px solid var(--amber); border-color: transparent; }
+.addrow input::placeholder { color: var(--muted); }
+.addrow input:focus { outline: 2px solid var(--amber); border-color: transparent; }
+.addrow #scLabel { flex: 1 1 34%; }
+.addrow #scSend { flex: 2 1 48%; }
 
-.pwform { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
-.pwform input {
-  min-height: 44px;
+.pwform { display: flex; flex-direction: column; gap: 10px; }
+.pwfield { position: relative; display: flex; }
+.pwfield input {
+  flex: 1; min-width: 0; min-height: 48px;
   font: 14px var(--mono); color: var(--cream);
   background: var(--panel-up); border: 1px solid var(--line); border-radius: 10px;
-  padding: 0 12px;
+  padding: 0 62px 0 12px;
 }
-.pwform input::placeholder { color: var(--muted); }
-.pwform input:focus { outline: 2px solid var(--amber); border-color: transparent; }
+.pwfield input::placeholder { color: var(--muted); }
+.pwfield input:focus { outline: 2px solid var(--amber); border-color: transparent; }
+.reveal {
+  position: absolute; right: 4px; top: 4px; bottom: 4px;
+  padding: 0 12px; border-radius: 8px;
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--amber-soft);
+}
+.reveal:active { color: var(--amber); background: var(--line); }
 .pwactions { display: flex; gap: 8px; flex-wrap: wrap; }
 .pwactions .btn { flex: 1; min-width: 96px; }
 
 .custompath { display: flex; gap: 8px; margin-top: 12px; border-top: 1px solid var(--line); padding-top: 14px; }
+.set-hint:last-child { margin-bottom: 2px; }
 .custompath input {
   flex: 1; min-width: 0; min-height: 44px;
   font: 14px var(--mono); color: var(--cream);

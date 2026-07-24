@@ -132,20 +132,34 @@ function renderAuth() {
   $('#pwState').textContent = on
     ? 'A password is required to use this Muxboard.'
     : 'No password — anyone who can reach this Muxboard can use it.';
-  $('#pwCurrent').hidden = !on;
+  $('#pwCurrentField').hidden = !on;
   $('#pwRemove').hidden = !on;
   $('#logoutBtn').hidden = !on;
   $('#pwSubmit').textContent = on ? 'change password' : 'set password';
+  $('#pwNew').placeholder = on ? 'new password' : 'password';
+}
+
+// One field with a reveal toggle beats asking people to type it twice.
+for (const btn of document.querySelectorAll('.reveal')) {
+  btn.addEventListener('click', () => {
+    const input = document.getElementById(btn.dataset.reveal);
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    btn.textContent = showing ? 'show' : 'hide';
+  });
 }
 
 function clearPasswordFields() {
-  for (const id of ['#pwCurrent', '#pwNew', '#pwRepeat']) $(id).value = '';
+  for (const id of ['#pwCurrent', '#pwNew']) {
+    $(id).value = '';
+    $(id).type = 'password';
+  }
+  for (const btn of document.querySelectorAll('.reveal')) btn.textContent = 'show';
 }
 
 $('#pwForm').addEventListener('submit', async e => {
   e.preventDefault();
   const next = $('#pwNew').value;
-  if (next !== $('#pwRepeat').value) return toast("passwords don't match", true);
   if (next.length < 8) return toast('password must be at least 8 characters', true);
   try {
     await api('/api/password', {
@@ -558,10 +572,27 @@ function renderSettings() {
   }
 }
 
+function showSettingsTab(name) {
+  for (const seg of $('#segments').querySelectorAll('.seg')) {
+    const on = seg.dataset.tab === name;
+    seg.classList.toggle('on', on);
+    seg.setAttribute('aria-selected', String(on));
+  }
+  for (const panel of settingsSheet.querySelectorAll('.panel')) {
+    panel.hidden = panel.dataset.panel !== name;
+  }
+}
+
+$('#segments').addEventListener('click', e => {
+  const seg = e.target.closest('.seg');
+  if (seg) showSettingsTab(seg.dataset.tab);
+});
+
 function openSettings() {
   renderSettings();
   renderAuth();
   clearPasswordFields();
+  showSettingsTab('folders');
   openSheet(settingsSheet);
 }
 

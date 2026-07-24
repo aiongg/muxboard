@@ -1,6 +1,6 @@
 // Muxboard service worker: offline-first app shell, network-only API.
 // The shell must load with Tailscale off so the app can say "turn on Tailscale".
-const VERSION = 'muxboard-v3';
+const VERSION = 'muxboard-v4';
 const SHELL = [
   '/', '/style.css', '/app.js', '/manifest.webmanifest',
   '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png',
