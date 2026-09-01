@@ -36,6 +36,15 @@ simultaneously:
   own shortcut chips (`/clear` is handy — the Claude app can't do it remotely),
   plus a free-text field for any message or command. Slash commands get a short
   delay before Enter so the TUI's autocomplete settles.
+- **Fresh chat** — once a long session's prompt cache has expired, any further
+  turn (a `/compact` included) re-ingests the entire context at full token
+  cost. **fresh** (tap twice to confirm) sidesteps that: it looks up the
+  session's transcript UUID, sends `/clear` — a local TUI command, no model
+  turn — and then invokes your restore command with that UUID, so the new
+  context can mine the old transcript for just what it needs. Requires a
+  skill or slash command in your Claude Code setup that accepts a session
+  UUID (name configurable via `rolloverCommand`, default `/restore`); only
+  offered while the session is idle.
 - **Stop** — kill the tmux session (tap twice to confirm).
 - **Update + rolling restart** — run `claude update` from the app; sessions
   keep running their old binary until restarted, so Muxboard flags stale
@@ -90,7 +99,8 @@ by hand:
     { "label": "yes", "send": "yes, go ahead" },
     { "label": "↵ enter", "key": "enter" },
     { "label": "esc", "key": "escape" }
-  ]
+  ],
+  "rolloverCommand": "/restore"
 }
 ```
 
@@ -101,6 +111,10 @@ by hand:
   a slash command (200 chars), or `key` (`enter` / `escape`) for a keypress;
   labels are capped at 24 characters. In the app's add form, type `@enter` or
   `@esc` to create a keypress chip.
+- **`rolloverCommand`** — the slash command **fresh** runs in the cleared
+  session, invoked as `<rolloverCommand> <previous-session-uuid>`. Point it at
+  a skill that restores context by reading the previous transcript
+  (`~/.claude/projects/<munged-cwd>/<uuid>.jsonl`) selectively.
 
 Environment overrides:
 

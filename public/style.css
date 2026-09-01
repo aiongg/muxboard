@@ -164,7 +164,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .screen:empty::before { content: '· · ·'; color: var(--amber-soft); }
 
 .actions {
-  display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
   margin-top: 10px;
 }
 .btn {
@@ -176,6 +176,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   transition: transform .06s ease, background .1s ease;
 }
 .btn:active { transform: scale(.96); background: var(--line); }
+.btn.armed { background: var(--amber); color: var(--on-amber); border-color: var(--amber); }
 .btn.danger { color: var(--danger); }
 .btn.danger.armed { background: var(--danger); color: #fff; border-color: var(--danger); }
 .btn:disabled { opacity: .4; }

@@ -146,9 +146,12 @@ const DEFAULT_SHORTCUTS = [
   { label: 'esc', key: 'escape' },
 ];
 
+const DEFAULT_ROLLOVER_COMMAND = '/restore';
+
 const defaultConfig = () => ({
   roots: [shortPath(REPOS_ROOT)],
   shortcuts: DEFAULT_SHORTCUTS.map(s => ({ ...s })),
+  rolloverCommand: DEFAULT_ROLLOVER_COMMAND,
 });
 
 function cleanShortcut(s) {
@@ -168,7 +171,10 @@ function normalizeConfig(raw) {
   const shortcuts = Array.isArray(raw?.shortcuts)
     ? raw.shortcuts.map(cleanShortcut).filter(Boolean).slice(0, 12)
     : def.shortcuts;
-  return { roots: roots.length ? roots : def.roots, shortcuts };
+  const rolloverCommand = typeof raw?.rolloverCommand === 'string' && raw.rolloverCommand.trim().startsWith('/')
+    ? raw.rolloverCommand.trim().replace(/[\r\n]+/g, ' ').slice(0, 60)
+    : DEFAULT_ROLLOVER_COMMAND;
+  return { roots: roots.length ? roots : def.roots, shortcuts, rolloverCommand };
 }
 
 let configCache = null;
@@ -411,6 +417,53 @@ async function sendKeys(name, { kind, text }) {
   // Slash commands pop the TUI autocomplete; give it a beat before Enter.
   await sleep(body.startsWith('/') ? 450 : 120);
   await tmux('send-keys', '-t', target, 'Enter');
+}
+
+// --------------------------------------------------------------- rollover
+
+// Claude Code maintains ~/.claude/sessions/<pid>.json for each running
+// process; it names the transcript UUID exactly, where mtime heuristics on
+// the projects folder would guess. The format is internal to Claude Code
+// (like the TUI layout peek() reads), so validate before believing it: the
+// process start time proves the file describes this incarnation of the pid,
+// and the cwd must match the pane's.
+function sessionUuid(pid, cwd) {
+  let reg;
+  try { reg = JSON.parse(readFileSync(join(HOME, '.claude/sessions', `${pid}.json`), 'utf8')); }
+  catch { return null; }
+  if (!/^[0-9a-f][0-9a-f-]{34}[0-9a-f]$/.test(reg?.sessionId || '')) return null;
+  if (reg.cwd && cwd && reg.cwd !== cwd) return null;
+  if (reg.procStart) {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const starttime = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+      if (String(starttime) !== String(reg.procStart)) return null;
+    } catch {
+      return null;
+    }
+  }
+  return reg.sessionId;
+}
+
+// Roll a session over to a fresh context instead of paying to revive the old
+// one: once the prompt cache has lapsed, ANY model turn in the old session —
+// /compact included — re-ingests the whole context at full input cost. So the
+// old session gets no turn at all: capture its transcript UUID, /clear (a
+// local TUI command, no model call), and hand the UUID to the fresh context,
+// whose restore skill mines the transcript selectively.
+async function rollover(name) {
+  const { sessions } = await listSessions();
+  const s = sessions.find(x => x.name === name);
+  if (!s) throw httpError(404, 'no such session');
+  const { status } = await peek(name);
+  if (status !== 'idle') throw httpError(409, `session is ${status} — roll over when it is idle`);
+  const uuid = sessionUuid(s.pid, s.cwd);
+  if (!uuid) throw httpError(500, 'could not identify the session transcript');
+  const cfg = await loadConfig();
+  await sendKeys(name, { kind: 'command', text: '/clear' });
+  await sleep(1500); // let the TUI settle on the fresh prompt
+  await sendKeys(name, { kind: 'command', text: `${cfg.rolloverCommand} ${uuid}` });
+  return { uuid };
 }
 
 // ------------------------------------------------ claude update & recycling
@@ -771,6 +824,9 @@ const server = createServer(async (req, res) => {
       if (req.method === 'POST' && sub === '/keys') {
         await sendKeys(name, await readBody(req));
         return json(res, 200, { ok: true });
+      }
+      if (req.method === 'POST' && sub === '/rollover') {
+        return json(res, 200, await rollover(name));
       }
       if (req.method === 'GET' && sub === '/peek') {
         const n = Math.min(Number(url.searchParams.get('lines') || 40), 200);

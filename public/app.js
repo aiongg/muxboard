@@ -310,11 +310,13 @@ function createCard(s) {
     <div class="screen" role="log" aria-label="Terminal screen" tabindex="0"></div>
     <div class="actions">
       <button class="btn" data-act="send">send</button>
+      <button class="btn" data-act="fresh">fresh</button>
       <button class="btn danger" data-act="stop">stop</button>
     </div>
   </article>`;
   const card = tpl.content.firstElementChild;
   card.querySelector('[data-act=send]').addEventListener('click', () => openSendSheet(s.name));
+  card.querySelector('[data-act=fresh]').addEventListener('click', e => freshFlow(s.name, e.currentTarget));
   card.querySelector('[data-act=stop]').addEventListener('click', e => stopFlow(s.name, e.currentTarget));
   return card;
 }
@@ -353,6 +355,29 @@ async function doSend(name, payload, doneMsg) {
     setTimeout(poll, 600);
   } catch (e) {
     toast(e.message, true);
+  }
+}
+
+// Roll the session over to a fresh context: the server captures the
+// transcript UUID, /clear s, and invokes the restore skill. Clearing context
+// is disruptive enough to earn the same two-tap confirm as stop.
+function freshFlow(name, btn) {
+  const key = `fresh:${name}`;
+  const disarm = () => {
+    armed.delete(key);
+    btn.textContent = 'fresh';
+    btn.classList.remove('armed');
+  };
+  if (armed.has(key)) {
+    clearTimeout(armed.get(key));
+    disarm();
+    api(`/api/sessions/${encodeURIComponent(name)}/rollover`, { method: 'POST' })
+      .then(() => { toast(`${name}: fresh chat — restoring from the transcript`); setTimeout(poll, 800); })
+      .catch(e => toast(e.message, true));
+  } else {
+    btn.textContent = 'sure?';
+    btn.classList.add('armed');
+    armed.set(key, setTimeout(disarm, 3000));
   }
 }
 

@@ -30,6 +30,13 @@ Code's TUI chrome and infers status from rendered text — it is inherently
 sensitive to Claude Code's TUI layout. If peeks turn noisy or status detection
 misbehaves after a Claude Code update, that's where to look.
 
+Session rollover (the **fresh** button) leans on a second internal Claude Code
+surface: `~/.claude/sessions/<pid>.json`, which maps a running process to its
+transcript UUID. `sessionUuid()` validates it (cwd match, process start time)
+and refuses rather than guesses — if rollover starts failing with "could not
+identify the session transcript" after a Claude Code update, that file's
+schema is the suspect.
+
 User-tailored settings (repo roots, send-key shortcuts) belong in
 `~/.config/muxboard/config.json`, never hardcoded — the app has a settings
 sheet for editing them. That file is sent to the client on every poll, so
