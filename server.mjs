@@ -154,11 +154,17 @@ const defaultConfig = () => ({
   rolloverCommand: DEFAULT_ROLLOVER_COMMAND,
 });
 
+// Named keys a chip or the keypad may press, mapped to tmux key names.
+const KEYS = {
+  up: 'Up', down: 'Down', left: 'Left', right: 'Right',
+  tab: 'Tab', btab: 'BTab', enter: 'Enter', escape: 'Escape', backspace: 'BSpace',
+};
+
 function cleanShortcut(s) {
   if (!s || typeof s !== 'object') return null;
   const label = String(s.label ?? '').trim().slice(0, 24);
   if (!label) return null;
-  if (s.key === 'enter' || s.key === 'escape') return { label, key: s.key };
+  if (typeof s.key === 'string' && KEYS[s.key]) return { label, key: s.key };
   const send = String(s.send ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 200);
   return send ? { label, send } : null;
 }
@@ -406,10 +412,16 @@ async function killSession(name) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function sendKeys(name, { kind, text }) {
+async function sendKeys(name, { kind, key, text }) {
   const target = `=${name}:`;
-  if (kind === 'escape') return void await tmux('send-keys', '-t', target, 'Escape');
-  if (kind === 'enter') return void await tmux('send-keys', '-t', target, 'Enter');
+  // { kind: 'key', key: 'up' }; the older { kind: 'enter' | 'escape' } still works.
+  const named = KEYS[kind === 'key' ? key : kind];
+  if (kind === 'key' && !named) throw httpError(400, `unknown key: ${key}`);
+  if (named) {
+    const res = await tmux('send-keys', '-t', target, named);
+    if (!res.ok) throw httpError(404, res.err);
+    return;
+  }
   const body = String(text ?? '').replace(/[\r\n]+/g, ' ').trim();
   if (!body) throw httpError(400, 'empty text');
   const res = await tmux('send-keys', '-t', target, '-l', '--', body);

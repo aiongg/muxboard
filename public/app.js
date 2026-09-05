@@ -1,16 +1,22 @@
 // Muxboard client. Vanilla, no build step.
 
 const $ = s => document.querySelector(s);
-const cardsEl = $('#cards'), emptyEl = $('#empty'), restoreEl = $('#restoreBanner');
+const appEl = $('#app'), rowsEl = $('#rows'), emptyEl = $('#empty'), restoreEl = $('#restoreBanner');
 const offlineEl = $('#offline'), toastEl = $('#toast');
 const backdrop = $('#backdrop'), newSheet = $('#newSheet'), sendSheet = $('#sendSheet');
 const settingsSheet = $('#settingsSheet');
+const detailBody = $('#detailBody'), detailEmpty = $('#detailEmpty');
+const screenEl = $('#dScreen'), screenText = $('#dScreenText');
 
 let state = null;
 let failures = 0;
 let pollTimer = null;
 let sendTargetName = null;
-const armed = new Map();      // session name -> disarm timeout for stop confirm
+let selected = null;          // name of the session shown in the detail pane
+const armed = new Map();      // "stop:name" / "fresh:name" -> disarm timer for two-tap confirm
+
+// Two panes side by side on a wide screen; one at a time on a phone.
+const wide = matchMedia('(min-width: 880px)');
 
 // ------------------------------------------------------------------- utils
 
@@ -201,7 +207,8 @@ $('#logoutBtn').addEventListener('click', async () => {
 function render() {
   renderUpdate();
   renderRestore();
-  renderCards();
+  renderRows();
+  renderDetail();
   renderFolders();
   renderChips();
   // Only the labels, never the list DOM — a poll must not disturb the sheet.
@@ -275,129 +282,207 @@ function renderUpdate() {
   });
 }
 
-// Cards render incrementally — nodes are reused across polls, so a refresh
-// never resets a screen's scroll position or interrupts a scroll gesture.
-function renderCards() {
+// ------------------------------------------------------------------- list
+
+// Rows render incrementally — nodes are reused across polls, so a refresh
+// never resets the list's scroll position or interrupts a scroll gesture.
+function renderRows() {
   const sessions = state.sessions;
   emptyEl.hidden = sessions.length > 0;
   const byName = new Map();
-  for (const el of cardsEl.children) byName.set(el.dataset.name, el);
+  for (const el of rowsEl.children) byName.set(el.dataset.name, el);
 
   let prev = null;
   for (const s of sessions) {
-    let card = byName.get(s.name);
-    const fresh = !card;
-    if (card) byName.delete(s.name);
-    else card = createCard(s);
-    const want = prev ? prev.nextElementSibling : cardsEl.firstElementChild;
-    if (card !== want) cardsEl.insertBefore(card, want);
-    updateCard(card, s, fresh);
-    prev = card;
+    let row = byName.get(s.name);
+    if (row) byName.delete(s.name);
+    else row = createRow(s);
+    const want = prev ? prev.nextElementSibling : rowsEl.firstElementChild;
+    if (row !== want) rowsEl.insertBefore(row, want);
+    updateRow(row, s);
+    prev = row;
   }
   for (const gone of byName.values()) gone.remove();
 }
 
-function createCard(s) {
+function createRow(s) {
   const tpl = document.createElement('template');
   tpl.innerHTML = `
-  <article class="card" data-name="${esc(s.name)}">
-    <header class="card-top">
-      <span class="status"></span>
-      <h2>${esc(s.name)}</h2>
-      <span class="age"></span>
-    </header>
-    <div class="meta"></div>
-    <div class="screen" role="log" aria-label="Terminal screen" tabindex="0"></div>
-    <div class="actions">
-      <button class="btn" data-act="send">send</button>
-      <button class="btn" data-act="fresh">fresh</button>
-      <button class="btn danger" data-act="stop">stop</button>
-    </div>
-  </article>`;
-  const card = tpl.content.firstElementChild;
-  card.querySelector('[data-act=send]').addEventListener('click', () => openSendSheet(s.name));
-  card.querySelector('[data-act=fresh]').addEventListener('click', e => freshFlow(s.name, e.currentTarget));
-  card.querySelector('[data-act=stop]').addEventListener('click', e => stopFlow(s.name, e.currentTarget));
-  return card;
+  <button class="row" data-name="${esc(s.name)}">
+    <span class="status"></span>
+    <span class="row-body">
+      <span class="row-top"><span class="row-name">${esc(s.name)}</span><span class="age"></span></span>
+      <span class="row-sub"></span>
+      <span class="row-last"></span>
+    </span>
+    <span class="row-arrow" aria-hidden="true">❯</span>
+  </button>`;
+  const row = tpl.content.firstElementChild;
+  row.addEventListener('click', () => select(s.name));
+  return row;
 }
 
-function updateCard(card, s, forceBottom = false) {
-  const dot = card.querySelector('.status');
+function updateRow(row, s) {
+  row.classList.toggle('on', s.name === selected);
+  row.setAttribute('aria-current', s.name === selected ? 'true' : 'false');
+  const dot = row.querySelector('.status');
   dot.className = `status ${s.status}`;
   dot.title = s.status;
-  card.querySelector('.age').textContent = age(s.createdAt);
-  card.querySelector('.meta').innerHTML = `
-      <span>${esc(s.repo)}</span>
-      ${s.remoteControl ? '<span class="badge app">app</span>' : ''}
+  row.querySelector('.age').textContent = age(s.createdAt);
+  row.querySelector('.row-sub').innerHTML = `<span class="row-repo">${esc(s.repo)}</span>${badges(s)}`;
+  // The last thing on screen, so a glance at the list says what each one is up to.
+  const last = s.peek.map(l => l.trim()).filter(Boolean).at(-1) || '';
+  row.querySelector('.row-last').textContent = last;
+}
+
+function badges(s) {
+  return `${s.remoteControl ? '<span class="badge app">app</span>' : ''}
       ${s.attached ? '<span class="badge tty">tty</span>' : ''}
       ${s.status === 'attention' ? '<span class="badge state-word">needs you</span>' : ''}
       ${state.claude?.pending?.includes(s.name) ? '<span class="badge queued">restart queued</span>'
         : s.stale ? `<span class="badge stale">${esc(s.version || 'old')}</span>` : ''}`;
+}
+
+// ----------------------------------------------------------------- detail
+
+let shownName = null; // which session the detail pane currently displays
+
+function renderDetail() {
+  const s = selected && state.sessions.find(x => x.name === selected);
+  if (!s) {
+    if (selected) {
+      // The session we were looking at is gone (stopped, or never existed).
+      select(null, { replace: true });
+      return;
+    }
+    if (!selected && wide.matches && state.sessions.length) {
+      select(state.sessions[0].name, { replace: true }); // never an empty pane on desktop
+      return;
+    }
+    detailBody.hidden = true;
+    detailEmpty.hidden = false;
+    shownName = null;
+    return;
+  }
+  detailEmpty.hidden = true;
+  detailBody.hidden = false;
+  const fresh = shownName !== s.name;
+  shownName = s.name;
+
+  const dot = $('#dStatus');
+  dot.className = `status ${s.status}`;
+  dot.title = s.status;
+  $('#dName').textContent = s.name;
+  $('#dAge').textContent = age(s.createdAt);
+  $('#dMeta').innerHTML = `<span>${esc(s.repo)}</span>${badges(s)}`;
 
   // The screen sticks to the bottom like a terminal: follow new output unless
   // the user has scrolled up to read.
-  const screen = card.querySelector('.screen');
   const text = s.peek.join('\n');
-  if (screen.textContent !== text) {
-    const stick = forceBottom ||
-      screen.scrollTop + screen.clientHeight >= screen.scrollHeight - 8;
-    screen.textContent = text;
-    if (stick) screen.scrollTop = screen.scrollHeight;
+  if (fresh || screenText.textContent !== text) {
+    const stick = fresh || screenEl.scrollTop + screenEl.clientHeight >= screenEl.scrollHeight - 8;
+    screenText.textContent = text;
+    if (stick) screenEl.scrollTop = screenEl.scrollHeight;
   }
+  syncActionButtons();
 }
+
+// Selection drives the URL hash so a reload lands on the same session, and on
+// a phone the browser's back button returns to the list.
+function nameFromHash() {
+  try { return decodeURIComponent(location.hash.slice(1)) || null; } catch { return null; }
+}
+
+function select(name, { replace = false } = {}) {
+  selected = name;
+  const url = name ? `#${encodeURIComponent(name)}` : location.pathname;
+  if (replace || wide.matches || name === nameFromHash()) history.replaceState({ s: name }, '', url);
+  else history.pushState({ s: name, pushed: true }, '', url);
+  appEl.dataset.view = name ? 'detail' : 'list';
+  if (state) { renderRows(); renderDetail(); }
+}
+
+window.addEventListener('popstate', () => {
+  selected = nameFromHash();
+  appEl.dataset.view = selected ? 'detail' : 'list';
+  if (state) { renderRows(); renderDetail(); }
+});
+
+$('#backBtn').addEventListener('click', () => {
+  if (history.state?.pushed) history.back();
+  else select(null, { replace: true });
+});
 
 // ----------------------------------------------------------------- actions
 
 async function doSend(name, payload, doneMsg) {
   try {
     await api(`/api/sessions/${encodeURIComponent(name)}/keys`, { method: 'POST', body: payload });
-    toast(`${name}: ${doneMsg}`);
-    setTimeout(poll, 600);
+    if (doneMsg) toast(`${name}: ${doneMsg}`);
+    setTimeout(poll, doneMsg ? 600 : 350);
   } catch (e) {
     toast(e.message, true);
   }
 }
 
-// Roll the session over to a fresh context: the server captures the
-// transcript UUID, /clear s, and invokes the restore skill. Clearing context
-// is disruptive enough to earn the same two-tap confirm as stop.
-function freshFlow(name, btn) {
-  const key = `fresh:${name}`;
-  const disarm = () => {
-    armed.delete(key);
-    btn.textContent = 'fresh';
-    btn.classList.remove('armed');
-  };
+// A single keypress — arrows to pick a menu option, enter, esc. No toast: the
+// screen itself shows the result a moment later.
+function sendKey(key) {
+  if (selected) doSend(selected, { kind: 'key', key });
+}
+
+$('#keypad').addEventListener('click', e => {
+  const btn = e.target.closest('[data-key]');
+  if (btn) sendKey(btn.dataset.key);
+});
+
+// On a desktop, focus the screen and the navigation keys go straight through.
+const KEY_FROM_EVENT = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'enter', Escape: 'escape' };
+document.addEventListener('keydown', e => {
+  if (document.activeElement === screenEl && backdrop.hidden && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    const key = KEY_FROM_EVENT[e.key];
+    if (key) { e.preventDefault(); sendKey(key); return; }
+  }
+  if (e.key === 'Escape') closeSheets();
+});
+
+$('#sendBtn').addEventListener('click', () => { if (selected) openSendSheet(selected); });
+
+// Disruptive actions take two taps: the first arms the button for 3s.
+function twoTap(act, btn, run) {
+  const key = `${act}:${selected}`;
   if (armed.has(key)) {
     clearTimeout(armed.get(key));
-    disarm();
-    api(`/api/sessions/${encodeURIComponent(name)}/rollover`, { method: 'POST' })
-      .then(() => { toast(`${name}: fresh chat — restoring from the transcript`); setTimeout(poll, 800); })
-      .catch(e => toast(e.message, true));
+    armed.delete(key);
+    syncActionButtons();
+    run(selected);
   } else {
-    btn.textContent = 'sure?';
-    btn.classList.add('armed');
-    armed.set(key, setTimeout(disarm, 3000));
+    armed.set(key, setTimeout(() => { armed.delete(key); syncActionButtons(); }, 3000));
+    syncActionButtons();
   }
 }
 
-function stopFlow(name, btn) {
-  if (armed.has(name)) {
-    clearTimeout(armed.get(name));
-    armed.delete(name);
-    api(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' })
-      .then(() => { toast(`${name} stopped`); poll(); })
-      .catch(e => toast(e.message, true));
-  } else {
-    btn.textContent = 'sure?';
-    btn.classList.add('armed');
-    armed.set(name, setTimeout(() => {
-      armed.delete(name);
-      btn.textContent = 'stop';
-      btn.classList.remove('armed');
-    }, 3000));
+function syncActionButtons() {
+  for (const [act, btn] of [['fresh', $('#freshBtn')], ['stop', $('#stopBtn')]]) {
+    const on = armed.has(`${act}:${selected}`);
+    btn.textContent = on ? 'sure?' : act;
+    btn.classList.toggle('armed', on);
   }
 }
+
+// Roll the session over to a fresh context: the server captures the
+// transcript UUID, /clear s, and invokes the restore skill.
+$('#freshBtn').addEventListener('click', e => twoTap('fresh', e.currentTarget, name => {
+  api(`/api/sessions/${encodeURIComponent(name)}/rollover`, { method: 'POST' })
+    .then(() => { toast(`${name}: fresh chat — restoring from the transcript`); setTimeout(poll, 800); })
+    .catch(e => toast(e.message, true));
+}));
+
+$('#stopBtn').addEventListener('click', e => twoTap('stop', e.currentTarget, name => {
+  api(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' })
+    .then(() => { toast(`${name} stopped`); poll(); })
+    .catch(e => toast(e.message, true));
+}));
 
 // ------------------------------------------------------------------ sheets
 
@@ -412,7 +497,6 @@ function closeSheets() {
   settingsSheet.hidden = true;
 }
 backdrop.addEventListener('click', closeSheets);
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheets(); });
 
 // Drag a sheet downward to dismiss it. The first decisive move owns the
 // gesture: dragging down while the sheet is at scroll-top is ours (claimed
@@ -536,7 +620,7 @@ $('#chips').addEventListener('click', e => {
   const chip = e.target.closest('.chip');
   if (!chip || !sendTargetName) return;
   closeSheets();
-  if (chip.dataset.key) doSend(sendTargetName, { kind: chip.dataset.key }, `sent ${chip.textContent.trim()}`);
+  if (chip.dataset.key) doSend(sendTargetName, { kind: 'key', key: chip.dataset.key }, `sent ${chip.textContent.trim()}`);
   else doSend(sendTargetName, { kind: 'command', text: chip.dataset.send }, `sent ${chip.dataset.send}`);
 });
 
@@ -630,13 +714,23 @@ $('#rootForm').addEventListener('submit', async e => {
   if (await saveConfig({ ...conf(), roots: [...conf().roots, v] })) $('#rootInput').value = '';
 });
 
+// "@up" in the add form → a keypress chip. Server-side names in KEYS (server.mjs).
+const KEY_SHORTHAND = {
+  enter: 'enter', return: 'enter', esc: 'escape', escape: 'escape',
+  up: 'up', down: 'down', left: 'left', right: 'right', tab: 'tab',
+  'shift-tab': 'btab', shifttab: 'btab', btab: 'btab', backspace: 'backspace', bs: 'backspace',
+};
+function keyFromShorthand(v) {
+  const m = /^@([a-z-]+)$/i.exec(v.trim());
+  return m ? KEY_SHORTHAND[m[1].toLowerCase()] || null : null;
+}
+
 $('#shortcutForm').addEventListener('submit', async e => {
   e.preventDefault();
   const label = $('#scLabel').value.trim();
   const value = $('#scSend').value.trim();
   if (!label || !value) return;
-  const key = /^@(enter|return)$/i.test(value) ? 'enter'
-    : /^@(esc|escape)$/i.test(value) ? 'escape' : null;
+  const key = keyFromShorthand(value);
   const entry = key ? { label, key } : { label, send: value };
   if (await saveConfig({ ...conf(), shortcuts: [...conf().shortcuts, entry] })) {
     $('#scLabel').value = '';
@@ -704,4 +798,5 @@ if ('serviceWorker' in navigator) {
   });
   navigator.serviceWorker.register('/sw.js');
 }
+select(nameFromHash(), { replace: true });
 poll();

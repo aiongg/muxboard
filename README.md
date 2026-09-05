@@ -10,8 +10,12 @@ a fast way to **see / start / poke / stop** those sessions from that same phone.
 Muxboard is the session manager, not another terminal.
 
 <p align="center">
-  <img src="docs/dashboard.png" alt="Session cards showing a working session and one that needs input" width="290">
+  <img src="docs/dashboard.png" alt="Session list: a dozen sessions with status lights, badges and their last screen line" width="290">
+  <img src="docs/session.png" alt="One session: its live terminal screen, a keypad with arrow keys, and send / fresh / stop" width="290">
   <img src="docs/send-sheet.png" alt="Send sheet with user-defined shortcut chips" width="290">
+</p>
+<p align="center">
+  <img src="docs/desktop.png" alt="Desktop layout: the session list beside the selected session's screen" width="880">
 </p>
 
 Each session is one tmux session running `claude --remote-control`, so it is
@@ -24,10 +28,15 @@ simultaneously:
 
 ## What the dashboard does
 
-- **Session cards** — one per tmux session running Claude, with a live terminal
-  screen (bottom-anchored, scroll up for history), a status light (working /
-  idle / needs you), uptime, and badges for app-reachability and desktop
-  attachment.
+- **Session list** — one row per tmux session running Claude: a status light
+  (working / idle / needs you), uptime, badges for app-reachability and desktop
+  attachment, and the last line on its screen, so a dozen sessions still fit
+  on one phone screen. Tap a row to open it; on a wide screen the list and the
+  open session sit side by side.
+- **Live screen** — the open session's terminal (bottom-anchored, scroll up for
+  history), with a keypad underneath: arrows, tab, shift+tab, esc and enter,
+  for the TUI's menus and permission prompts. On a desktop, click the screen
+  and the arrow keys, enter and esc go straight through.
 - **New session** — tap a folder from your configured roots, or type any path
   under `~`; a detached tmux session starts `claude --remote-control` there and
   shows up in the Claude app within seconds. Optional toggle to resume the
@@ -108,9 +117,10 @@ by hand:
   a session (max 8). Must resolve to a real path inside `$HOME`; symlinks
   pointing outside it are rejected.
 - **`shortcuts`** — the chips in the send sheet (max 12). Use `send` for text or
-  a slash command (200 chars), or `key` (`enter` / `escape`) for a keypress;
-  labels are capped at 24 characters. In the app's add form, type `@enter` or
-  `@esc` to create a keypress chip.
+  a slash command (200 chars), or `key` for a keypress: `enter`, `escape`,
+  `up`, `down`, `left`, `right`, `tab`, `btab` (shift+tab) or `backspace`;
+  labels are capped at 24 characters. In the app's add form, type `@enter`,
+  `@up`, `@shift-tab` and so on to create a keypress chip.
 - **`rolloverCommand`** — the slash command **fresh** runs in the cleared
   session, invoked as `<rolloverCommand> <previous-session-uuid>`. Point it at
   a skill that restores context by reading the previous transcript

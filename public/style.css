@@ -48,7 +48,7 @@ body {
   font-family: var(--mono);
   background: var(--ink);
   color: var(--cream);
-  min-height: 100dvh;
+  height: 100dvh; overflow: hidden;
   -webkit-font-smoothing: antialiased;
   overscroll-behavior-y: none;
 }
@@ -59,12 +59,9 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 /* ---------------------------------------------------------------- header */
 
 .top {
-  position: sticky; top: 0; z-index: 5;
+  flex: none;
   display: flex; align-items: center; justify-content: space-between;
   padding: calc(env(safe-area-inset-top) + 14px) 18px 12px;
-  background: color-mix(in srgb, var(--ink) 88%, transparent);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
 }
 .wordmark { display: flex; align-items: center; gap: 10px; font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
@@ -100,23 +97,62 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .dot.on { background: var(--ok); box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 60%, transparent); }
 .dot.off { background: var(--danger); }
 
-/* ------------------------------------------------------------------ main */
+/* ------------------------------------------------------------------ panes */
 
-#main {
-  max-width: 640px; margin: 0 auto;
-  padding: 16px 14px calc(env(safe-area-inset-bottom) + 108px);
+/* List of sessions on the left, the chosen one on the right. On a phone the
+   two are pages: the list, then the session, with back to return. */
+.shell { display: grid; grid-template-columns: 1fr; height: 100dvh; }
+.pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.shell[data-view="list"] .detail-pane { display: none; }
+.shell[data-view="detail"] .list-pane { display: none; }
+
+.pane-scroll {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: 12px 14px 20px;
 }
 
-.cards { display: flex; flex-direction: column; gap: 14px; }
+@media (min-width: 880px) {
+  .shell { grid-template-columns: clamp(300px, 34vw, 400px) 1fr; }
+  .shell[data-view] .list-pane, .shell[data-view] .detail-pane { display: flex; }
+  .list-pane { border-right: 1px solid var(--line); }
+  #backBtn { display: none; }
+}
 
-.card {
+/* ------------------------------------------------------------------- rows */
+
+.rows { display: flex; flex-direction: column; gap: 8px; }
+.row {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%;
+  padding: 11px 12px 10px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 14px 14px 12px;
+  border-radius: 12px;
+  text-align: left;
+  transition: background .1s ease, border-color .1s ease;
 }
+.row:active { background: var(--panel-up); }
+.row.on { border-color: var(--amber-soft); background: var(--panel-up); }
+.row .status { margin-top: 5px; }
+.row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.row-top { display: flex; align-items: baseline; gap: 8px; }
+.row-name {
+  flex: 1; min-width: 0; font-size: 15px; font-weight: 700; letter-spacing: .01em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row-sub {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 11px; color: var(--muted);
+}
+.row-repo { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-sub .badge { flex: none; }
+.row-last {
+  font-size: 11px; color: var(--screen-text); opacity: .75;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-height: 1.4em;
+}
+.row-arrow { color: var(--muted); align-self: center; font-size: 12px; }
+.row.on .row-arrow { color: var(--amber); }
 
-.card-top { display: flex; align-items: center; gap: 10px; }
 .status {
   width: 10px; height: 10px; border-radius: 50%; flex: none;
   background: var(--muted);
@@ -126,15 +162,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .status.idle { background: var(--ok); }
 @keyframes pulse { 50% { opacity: .35; } }
 
-.card-top h2 { font-size: 17px; font-weight: 700; letter-spacing: .01em; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .age { font-size: 12px; color: var(--muted); flex: none; }
 
-.meta {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin: 6px 0 10px; padding-left: 20px;
-  font-size: 12px; color: var(--muted);
-  overflow: hidden;
-}
 .badge {
   font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
   border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px;
@@ -145,11 +174,27 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .badge.queued { color: var(--amber); border-color: var(--amber-soft); }
 .badge.stale { color: var(--amber); border-color: var(--amber-soft); text-transform: none; }
 
-/* The signature element: a live screen into the session's terminal.
-   Roughly square on a phone, bottom-anchored like a terminal, scroll up
-   for recent history (the server sends 300 lines of scrollback). */
+/* ----------------------------------------------------------------- detail */
+
+.detail-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.detail-top { gap: 10px; padding: calc(env(safe-area-inset-top) + 10px) 14px 10px; }
+.detail-name {
+  flex: 1; min-width: 0; font-size: 17px; font-weight: 700; letter-spacing: .01em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 12px; color: var(--muted);
+  overflow: hidden;
+}
+.detail-meta { flex: none; padding: 10px 14px 0; }
+
+/* The signature element: a live screen into the session's terminal. Fills
+   the pane, bottom-anchored like a terminal, scroll up for recent history
+   (the server sends 300 lines of scrollback). */
 .screen {
-  display: block; width: 100%; text-align: left;
+  width: auto; text-align: left;
+  flex: 1; min-height: 0; margin: 10px 14px 0;
   background: var(--screen);
   border: 1px solid var(--screen-border);
   border-radius: 10px;
@@ -157,16 +202,38 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   font-family: var(--mono); font-size: 11px; line-height: 1.5;
   color: var(--screen-text);
   white-space: pre-wrap; word-break: break-word;
-  min-height: 40px; max-height: min(88vw, 420px);
   overflow-y: auto; overscroll-behavior: contain;
   box-shadow: inset 0 8px 18px -12px #000;
 }
-.screen:empty::before { content: '· · ·'; color: var(--amber-soft); }
+/* Text hugs the bottom edge, so a young session reads like a terminal too. */
+.screen { display: flex; flex-direction: column; }
+.screen-text { margin-top: auto; }
+.screen-text:empty::before { content: '· · ·'; color: var(--amber-soft); }
+.screen:focus-visible { outline-offset: 0; border-radius: 10px; }
+@media (min-width: 880px) { .screen { font-size: 13px; margin: 12px 16px 0; } }
 
-.actions {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
-  margin-top: 10px;
+.detail-bar {
+  flex: none; display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 14px calc(env(safe-area-inset-bottom) + 12px);
 }
+
+/* Keypad: the TUI's menus and mode toggles want real keys, not text. */
+.keypad { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+.key {
+  min-height: 44px; min-width: 0;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: var(--panel);
+  color: var(--amber); font-size: 14px; font-weight: 500;
+  transition: transform .06s ease, background .1s ease;
+}
+.key:active { transform: scale(.94); background: var(--amber-soft); color: var(--on-amber); }
+.key[data-key="escape"] { font-size: 12px; letter-spacing: .04em; }
+@media (min-width: 880px) {
+  .keypad { grid-template-columns: repeat(8, minmax(52px, 72px)); }
+}
+
+.actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+@media (min-width: 880px) { .actions { max-width: 480px; } }
 .btn {
   min-height: 48px;
   border: 1px solid var(--line); border-radius: 10px;
@@ -180,6 +247,11 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .btn.danger { color: var(--danger); }
 .btn.danger.armed { background: var(--danger); color: #fff; border-color: var(--danger); }
 .btn:disabled { opacity: .4; }
+
+.detail-empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 13px; padding: 32px;
+}
 
 /* --------------------------------------------------------- restore banner */
 
@@ -203,16 +275,17 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 /* ------------------------------------------------------------ empty state */
 
-.empty { text-align: center; padding: 64px 20px; color: var(--muted); font-size: 14px; }
+.empty { text-align: center; padding: 48px 20px; color: var(--muted); font-size: 14px; }
 .empty-glyph { font-size: 34px; color: var(--amber-soft); margin-bottom: 18px; font-weight: 700; }
+.detail-empty .empty-glyph { opacity: .6; }
 .empty-sub { font-size: 12px; margin-top: 6px; }
 
 /* ------------------------------------------------------------- bottom bar */
 
 .bottombar {
-  position: fixed; bottom: 0; left: 0; right: 0; z-index: 5;
+  flex: none;
   padding: 12px 14px calc(env(safe-area-inset-bottom) + 12px);
-  background: linear-gradient(transparent, var(--ink) 40%);
+  border-top: 1px solid var(--line);
 }
 .cta {
   display: block; width: 100%; max-width: 640px; margin: 0 auto;

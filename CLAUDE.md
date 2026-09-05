@@ -22,8 +22,14 @@ server in its cgroup — and with it every running Claude session.
 Each session is one tmux session running `claude --remote-control` (details in
 README.md). The server drives everything through the tmux CLI: `list-panes` for
 discovery, `capture-pane` for the terminal screen, `send-keys` for input
-injection (pane targets use the `=name:` exact-match form). Session and Claude
+injection (pane targets use the `=name:` exact-match form; named keys such as
+arrows go through the `KEYS` whitelist in `server.mjs`). Session and Claude
 version detection read `/proc`, which is why this is Linux-only.
+
+The client is a list → detail UI: `#rows` in the list pane, one `#detailBody`
+for the selected session, `data-view` on the shell switching panes on narrow
+screens and a media query showing both on wide ones. Selection lives in the
+URL hash so back/forward and reloads behave.
 
 The peek filter in `server.mjs` (`peek()` / `isChromeFooter()`) strips Claude
 Code's TUI chrome and infers status from rendered text — it is inherently

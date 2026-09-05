@@ -91,6 +91,22 @@ const SESSIONS = [
   },
 ];
 
+// A fuller board, so the list has to earn its keep.
+const MORE = [
+  ['website', 'idle', 412, ['❯ tighten the hero copy', '', '● Done — three variants in copy/hero.md.', '', '✻ Cooked for 12s']],
+  ['infra', 'working', 3, ['❯ rotate the staging certs', '', '● Bash(./scripts/certs.sh --env staging)', '  └ requesting …', '', '✻ Brewing… (esc to interrupt)']],
+  ['mobile-app', 'attention', 27, ['● Edit(app/src/main/Nav.kt)', '', 'Do you want to make this edit?', '❯ 1. Yes', '  2. Yes, allow all edits this session', '  3. No']],
+  ['billing', 'idle', 95, ['❯ reconcile last month', '', '● 14 invoices matched, 2 flagged for review — see reconcile.md.']],
+  ['search-index', 'working', 61, ['● Bash(cargo bench)', '  └ running 8 benches …', '', '✻ Simmering… (esc to interrupt)']],
+  ['design-system', 'idle', 840, ['● Tokens exported. Nothing else pending.']],
+  ['ci-migration', 'working', 12, ['● Read(.github/workflows/ci.yml)', '  └ Read 122 lines', '', '✻ Thinking… (esc to interrupt)']],
+  ['notebooks', 'idle', 1500, ['❯ summarise the retention analysis', '', '● Weekly retention is flat at 41%; the D30 dip is a tracking bug.']],
+  ['toy-compiler-2', 'attention', 5, ['Plan mode is on. Approve the plan?', '❯ 1. Yes, clear context and go', '  2. Yes, keep context', '  3. No, keep planning']],
+];
+for (const [name, status, ageMinutes, peek] of MORE) {
+  SESSIONS.push({ name, repo: `~/projects/${name}`, status, ageMinutes, remoteControl: true, attached: false, version: '2.1.219', peek });
+}
+
 const FOLDERS = ['acme-api', 'docs-site', 'infra', 'toy-compiler', 'website']
   .map(name => ({
     name,
