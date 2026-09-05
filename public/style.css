@@ -101,8 +101,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 /* List of sessions on the left, the chosen one on the right. On a phone the
    two are pages: the list, then the session, with back to return. */
-.shell { display: grid; grid-template-columns: 1fr; height: 100dvh; }
-.pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.shell { display: grid; grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr); height: 100dvh; }
+.pane { position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .shell[data-view="list"] .detail-pane { display: none; }
 .shell[data-view="detail"] .list-pane { display: none; }
 
@@ -176,7 +176,15 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 /* ----------------------------------------------------------------- detail */
 
-.detail-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* Absolutely sized to the pane, with explicit grid rows: header, meta, screen,
+   bar. The screen row is the only one that gives, so the keypad and buttons are
+   always on screen and only the terminal scrolls. Sizing it this way rather
+   than through nested flex: 1 keeps mobile WebKit from letting the screen grow
+   to its content and pushing the bar below a page that cannot scroll. */
+.detail-body {
+  position: absolute; inset: 0;
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
 .detail-top { gap: 10px; padding: calc(env(safe-area-inset-top) + 10px) 14px 10px; }
 .detail-name {
   flex: 1; min-width: 0; font-size: 17px; font-weight: 700; letter-spacing: .01em;
@@ -194,7 +202,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
    (the server sends 300 lines of scrollback). */
 .screen {
   width: auto; text-align: left;
-  flex: 1; min-height: 0; margin: 10px 14px 0;
+  min-height: 0; margin: 10px 14px 0;
   background: var(--screen);
   border: 1px solid var(--screen-border);
   border-radius: 10px;
