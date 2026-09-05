@@ -286,12 +286,25 @@ function procChildren(pid) {
 // is still executing — even after that file was deleted by an update.
 function claudeExeVersion(pid) {
   try {
-    const exe = readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, '');
-    const m = exe.match(/\/versions\/([^/]+)$/);
-    return m ? m[1] : null;
+    return versionFromPath(readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, ''));
   } catch {
     return null;
   }
+}
+
+function versionFromPath(p) {
+  const m = p.match(/\/versions\/([^/]+)$/);
+  return m ? m[1] : null;
+}
+
+// Numeric compare of dotted versions: negative when a is older than b.
+function compareVersions(a, b) {
+  const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d;
+  }
+  return 0;
 }
 
 function shortPath(p) {
@@ -482,6 +495,14 @@ async function rollover(name) {
 
 let versionCache = { value: null, at: 0 };
 async function claudeVersion(force = false) {
+  // The native install is a symlink to versions/<v>. Reading it is instant
+  // and always current — Claude Code updates itself in the background, and
+  // a cached `--version` would lag that by up to an hour, flagging sessions
+  // on the new binary as "older" than the install.
+  try {
+    const v = versionFromPath(realpathSync(CLAUDE_BIN));
+    if (v) return v;
+  } catch { /* not the native layout; ask the binary */ }
   if (!force && versionCache.value && Date.now() - versionCache.at < 3600_000) return versionCache.value;
   try {
     const { stdout } = await exec(CLAUDE_BIN, ['--version'], { timeout: 15000 });
@@ -787,7 +808,7 @@ const server = createServer(async (req, res) => {
           ...s,
           status: s.peek.status,
           peek: s.peek.lines,
-          stale: !!(s.version && current && s.version !== current),
+          stale: !!(s.version && current && compareVersions(s.version, current) < 0),
         })),
         folders: await listFolders(sessions, cfg),
         restore: await restoreOffer(tmuxRunning, sessions),
