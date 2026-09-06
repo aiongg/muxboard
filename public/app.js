@@ -385,6 +385,7 @@ function renderDetail() {
     if (stick) screenEl.scrollTop = screenEl.scrollHeight;
   }
   syncActionButtons();
+  sendRect = $('#sendBtn').getBoundingClientRect();
 }
 
 // Selection drives the URL hash so a reload lands on the same session, and on
@@ -697,10 +698,23 @@ $('#segments').addEventListener('click', e => {
   if (seg) showSettingsTab(seg.dataset.tab);
 });
 
+// A few layout facts, for diagnosing a phone that hides part of the UI: the
+// viewport the page laid out in, what the browser reports as the bottom
+// system-bar inset, and where the send button actually landed.
+let sendRect = null; // where the send button last laid out, while a session was open
+function renderDiagnostics() {
+  const inset = getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom').trim() || '0px';
+  const send = sendRect || { top: 0, bottom: 0 };
+  const visual = window.visualViewport ? Math.round(window.visualViewport.height) : innerHeight;
+  $('#diag').textContent = `viewport ${innerWidth}×${innerHeight} · visual ${visual} · page ${document.scrollingElement.scrollHeight}`
+    + ` · safe-bottom ${inset} · send ${Math.round(send.top)}–${Math.round(send.bottom)}`;
+}
+
 function openSettings() {
   renderSettings();
   renderAuth();
   clearPasswordFields();
+  renderDiagnostics();
   showSettingsTab('folders');
   openSheet(settingsSheet);
 }
@@ -796,7 +810,18 @@ if ('serviceWorker' in navigator) {
     reloading = true;
     location.reload();
   });
-  navigator.serviceWorker.register('/sw.js');
+  navigator.serviceWorker.register('/sw.js').then(reg => {
+    // Browsers only look for a new worker on navigation, and a phone that
+    // resumes a backgrounded PWA never navigates. Check on every foreground
+    // instead, and every so often while open.
+    const check = () => { if (!document.hidden) reg.update().catch(() => {}); };
+    document.addEventListener('visibilitychange', check);
+    setInterval(check, 15 * 60 * 1000);
+  }).catch(() => {});
+  // The cache name is the shell version actually being served, for diagnosis.
+  caches.keys().then(keys => { $('#shellVersion').textContent = keys.join(', ') || 'none'; }).catch(() => {});
+} else {
+  $('#shellVersion').textContent = 'no service worker';
 }
 select(nameFromHash(), { replace: true });
 poll();

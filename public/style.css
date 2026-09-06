@@ -5,6 +5,7 @@
 @font-face { font-family: 'JBMono'; src: url('/fonts/jbmono-700.woff2') format('woff2'); font-weight: 700; font-display: swap; }
 
 :root {
+  --safe-bottom: env(safe-area-inset-bottom);
   --ink: #131009;
   --panel: #1e1811;
   --panel-up: #272014;
@@ -182,7 +183,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
    than through nested flex: 1 keeps mobile WebKit from letting the screen grow
    to its content and pushing the bar below a page that cannot scroll. */
 .detail-body {
-  position: absolute; inset: 0;
+  position: absolute; top: 0; right: 0; bottom: 0; left: 0;
   display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 .detail-top { gap: 10px; padding: calc(env(safe-area-inset-top) + 10px) 14px 10px; }
@@ -331,6 +332,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .sheet-grip { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 4px auto 14px; }
 .sheet-title { font-size: 14px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
 .sheet-title span { color: var(--amber); }
+.shell-version { margin-top: 18px; font-size: 11px; line-height: 1.6; color: var(--muted); text-align: right; word-break: break-word; }
 
 .folders { display: flex; flex-direction: column; }
 .folder {
