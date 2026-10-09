@@ -53,6 +53,3 @@ in `auth.json` beside it, mode 0600, and are never serialised into a response.
 
 `node scripts/demo.mjs` serves the real UI backed by invented sessions on
 port 8801, so the frontend can be exercised without touching live sessions.
-
-If a `CLAUDE.local.md` exists next to this file, read it too — it holds
-deployment specifics for this particular machine.
