@@ -54,6 +54,15 @@ simultaneously:
   skill or slash command in your Claude Code setup that accepts a session
   UUID (name configurable via `rolloverCommand`, default `/restore`); only
   offered while the session is idle.
+- **Warm handoff** — the prompt cache of a main Claude Code session lasts an
+  hour on a subscription. When a session has sat idle for `idleMinutes`
+  (default 50) with more than `minTokens` of context (default 200k), Muxboard
+  types your handoff command (default `/handoff`) into it once, while the cache
+  is still warm. Nothing is cleared: the session stays idle with a handoff
+  written, and the detail view shows "handoff sent hh:mm". It fires only when
+  the session is idle with an empty input line, never past 58 minutes idle, and
+  not again until you send the session a new prompt. Each session has an **auto
+  handoff** switch; `warmHandoff.enabled` sets its default.
 - **Stop** — kill the tmux session (tap twice to confirm).
 - **Update + rolling restart** — run `claude update` from the app; sessions
   keep running their old binary until restarted, so Muxboard flags stale
@@ -109,7 +118,8 @@ by hand:
     { "label": "↵ enter", "key": "enter" },
     { "label": "esc", "key": "escape" }
   ],
-  "rolloverCommand": "/restore"
+  "rolloverCommand": "/restore",
+  "warmHandoff": { "enabled": true, "idleMinutes": 50, "minTokens": 200000, "command": "/handoff" }
 }
 ```
 
@@ -125,6 +135,11 @@ by hand:
   session, invoked as `<rolloverCommand> <previous-session-uuid>`. Point it at
   a skill that restores context by reading the previous transcript
   (`~/.claude/projects/<munged-cwd>/<uuid>.jsonl`) selectively.
+- **`warmHandoff`** — the warm handoff above. `enabled` is the default for
+  each session's switch; `idleMinutes` is 1–55; `minTokens` counts the last
+  answer's input plus cache-read and cache-write tokens; `command` is a slash
+  command or plain text, one line, 200 chars. Point it at a skill that writes a
+  handoff file.
 
 Environment overrides:
 
@@ -135,8 +150,11 @@ Environment overrides:
 | `MUX_ROOT`         | `$HOME`               | Seeds `roots` on first run           |
 | `MUX_CLAUDE`       | `~/.local/bin/claude` | Claude Code binary                   |
 | `XDG_CONFIG_HOME`  | `~/.config`           | Where `muxboard/config.json` lives  |
+| `XDG_STATE_HOME`   | `~/.local/state`      | Where `muxboard/` state files live   |
 
 Session state is snapshotted to `~/.local/state/muxboard/snapshot.json`.
+Per-session handoff switches and sent handoffs are kept in `handoff.json`
+beside it, so a restart neither forgets a switch nor sends a handoff twice.
 
 ## Password (optional)
 

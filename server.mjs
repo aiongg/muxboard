@@ -5,7 +5,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
-import { readFile, readdir, stat, mkdir, writeFile, rm } from 'node:fs/promises';
+import { readFile, readdir, stat, mkdir, writeFile, rm, open as openFile } from 'node:fs/promises';
 import { readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, extname, basename, sep } from 'node:path';
 import { homedir, hostname } from 'node:os';
@@ -18,7 +18,7 @@ const HOST = process.env.HOST || '127.0.0.1';
 const HOME = homedir();
 const REPOS_ROOT = process.env.MUX_ROOT || process.env.DECK_ROOT || HOME;
 const CLAUDE_BIN = process.env.MUX_CLAUDE || process.env.DECK_CLAUDE || join(HOME, '.local/bin/claude');
-const STATE_DIR = join(HOME, '.local/state/muxboard');
+const STATE_DIR = join(process.env.XDG_STATE_HOME || join(HOME, '.local/state'), 'muxboard');
 const SNAPSHOT_FILE = join(STATE_DIR, 'snapshot.json');
 const CONFIG_DIR = join(process.env.XDG_CONFIG_HOME || join(HOME, '.config'), 'muxboard');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
@@ -148,10 +148,19 @@ const DEFAULT_SHORTCUTS = [
 
 const DEFAULT_ROLLOVER_COMMAND = '/restore';
 
+const DEFAULT_WARM_HANDOFF = { enabled: true, idleMinutes: 50, minTokens: 200000, command: '/handoff' };
+// Claude Code's main-session prompt cache lives one hour on a subscription.
+// The handoff's first request must land inside it, so the idle threshold is
+// capped below the hour and a session idle past HANDOFF_TOO_LATE_MIN is left
+// alone — by then the handoff itself would be the cold send it exists to avoid.
+const HANDOFF_MAX_IDLE_MIN = 55;
+const HANDOFF_TOO_LATE_MIN = 58;
+
 const defaultConfig = () => ({
   roots: [shortPath(REPOS_ROOT)],
   shortcuts: DEFAULT_SHORTCUTS.map(s => ({ ...s })),
   rolloverCommand: DEFAULT_ROLLOVER_COMMAND,
+  warmHandoff: { ...DEFAULT_WARM_HANDOFF },
 });
 
 // Named keys a chip or the keypad may press, mapped to tmux key names.
@@ -180,7 +189,25 @@ function normalizeConfig(raw) {
   const rolloverCommand = typeof raw?.rolloverCommand === 'string' && raw.rolloverCommand.trim().startsWith('/')
     ? raw.rolloverCommand.trim().replace(/[\r\n]+/g, ' ').slice(0, 60)
     : DEFAULT_ROLLOVER_COMMAND;
-  return { roots: roots.length ? roots : def.roots, shortcuts, rolloverCommand };
+  return {
+    roots: roots.length ? roots : def.roots, shortcuts, rolloverCommand,
+    warmHandoff: cleanWarmHandoff(raw?.warmHandoff),
+  };
+}
+
+// idleMinutes stops short of the one-hour cache TTL, so the handoff turn still
+// starts while the cache is warm. The command may be a slash command or plain
+// text; either way it is one line, typed like a send-sheet message.
+function cleanWarmHandoff(raw) {
+  const d = DEFAULT_WARM_HANDOFF;
+  const int = (v, min, max, def) => Number.isInteger(v) && v >= min && v <= max ? v : def;
+  const command = typeof raw?.command === 'string' ? raw.command.replace(/[\r\n]+/g, ' ').trim().slice(0, 200) : '';
+  return {
+    enabled: typeof raw?.enabled === 'boolean' ? raw.enabled : d.enabled,
+    idleMinutes: int(raw?.idleMinutes, 1, HANDOFF_MAX_IDLE_MIN, d.idleMinutes),
+    minTokens: int(raw?.minTokens, 0, 10_000_000, d.minTokens),
+    command: command || d.command,
+  };
 }
 
 let configCache = null;
@@ -491,6 +518,209 @@ async function rollover(name) {
   return { uuid };
 }
 
+// ------------------------------------------------------------ warm handoff
+
+// The other side of rollover: while a big idle session's cache is still warm,
+// type the handoff command into it once, so a handoff exists before the cache
+// lapses. Nothing is cleared; the session just sits idle with a handoff
+// written. Idle time and context size come from the session's transcript —
+// another Claude Code internal format, read defensively: only the file's tail,
+// and anything unparseable or unexpected means "don't send".
+
+const HANDOFF_FILE = join(STATE_DIR, 'handoff.json');
+const HANDOFF_TICK_MS = 60_000;
+const TAIL_BYTES = 256 * 1024;
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+// Claude Code names a project's transcript folder after its cwd, with every
+// character other than a letter or digit turned into "-".
+const projectDir = cwd => join(HOME, '.claude/projects', cwd.replace(/[^A-Za-z0-9]/g, '-'));
+
+// Persisted so a restart neither forgets a toggle nor re-sends a handoff:
+// toggles are per tmux session name (overrides of warmHandoff.enabled), sent
+// handoffs per transcript UUID.
+let handoffState = null;
+async function loadHandoffState() {
+  if (handoffState) return handoffState;
+  let raw = null;
+  try { raw = JSON.parse(await readFile(HANDOFF_FILE, 'utf8')); } catch { /* first run */ }
+  handoffState = {
+    toggles: raw?.toggles && typeof raw.toggles === 'object' ? raw.toggles : {},
+    sent: raw?.sent && typeof raw.sent === 'object' ? raw.sent : {},
+  };
+  return handoffState;
+}
+
+async function saveHandoffState() {
+  await mkdir(STATE_DIR, { recursive: true });
+  await writeFile(HANDOFF_FILE, JSON.stringify(handoffState, null, 2) + '\n');
+}
+
+// Session name → when the handoff for its current idle period went out.
+// Rebuilt by every tick; the client shows it as "handoff sent hh:mm".
+const handoffSentAt = new Map();
+
+function handoffView(name, cfg, st) {
+  const enabled = typeof st.toggles[name] === 'boolean' ? st.toggles[name] : cfg.warmHandoff.enabled;
+  return { enabled, sentAt: handoffSentAt.get(name) || null };
+}
+
+async function setHandoffToggle(name, enabled) {
+  const { sessions } = await listSessions();
+  if (!sessions.some(s => s.name === name)) throw httpError(404, 'no such session');
+  const st = await loadHandoffState();
+  st.toggles[name] = !!enabled;
+  await saveHandoffState();
+  return handoffView(name, await loadConfig(), st);
+}
+
+// Re-read only when the file changed; most ticks cost one stat per session.
+const tailCache = new Map();
+async function transcriptTail(path) {
+  let st;
+  try { st = await stat(path); } catch { return null; }
+  const hit = tailCache.get(path);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.info;
+  let info = await readTail(path, st.size, TAIL_BYTES);
+  // One assistant record can outgrow the window (a long answer, a big edit).
+  if (!info.lastAssistant && st.size > TAIL_BYTES) info = await readTail(path, st.size, TAIL_BYTES * 8);
+  tailCache.set(path, { size: st.size, mtimeMs: st.mtimeMs, info });
+  return info;
+}
+
+async function readTail(path, size, bytes) {
+  const start = Math.max(0, size - bytes);
+  const buf = Buffer.alloc(size - start);
+  const fh = await openFile(path, 'r');
+  try { await fh.read(buf, 0, buf.length, start); } finally { await fh.close(); }
+  const lines = buf.toString('utf8').split('\n');
+  if (start > 0) lines.shift(); // partial first line
+
+  let lastAssistant = null;
+  const prompts = []; // real user prompts, oldest first
+  for (const line of lines) {
+    if (!line) continue;
+    let r;
+    try { r = JSON.parse(line); } catch { continue; }
+    const at = Date.parse(r?.timestamp);
+    if (!Number.isFinite(at) || r.isSidechain) continue;
+    const msg = r.message;
+    if (r.type === 'assistant' && msg?.usage && msg.model !== '<synthetic>') {
+      const u = msg.usage;
+      const tokens = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      lastAssistant = { at, tokens };
+    } else if (r.type === 'user' && !r.isMeta && r.promptId && (!r.origin || r.origin.kind === 'human')) {
+      // Typed by a person (terminal or app) — not a tool result, task
+      // notification, or the text a skill injects.
+      const c = msg?.content;
+      if (Array.isArray(c) && c.some(p => p?.type === 'tool_result')) continue;
+      const text = typeof c === 'string' ? c
+        : Array.isArray(c) ? c.filter(p => p?.type === 'text').map(p => p.text).join(' ') : '';
+      prompts.push({ at, text });
+    }
+  }
+  return { lastAssistant, prompts };
+}
+
+// A slash command is recorded as <command-name>/x</command-name> plus
+// <command-args>; plain text as itself.
+function isHandoffPrompt(text, command) {
+  const norm = s => String(s).replace(/\s+/g, ' ').trim();
+  const name = /<command-name>([^<]*)<\/command-name>/.exec(text);
+  const typed = name ? `${name[1]} ${/<command-args>([^<]*)<\/command-args>/.exec(text)?.[1] || ''}` : text;
+  return norm(typed) === norm(command);
+}
+
+// What sits in the TUI's input box: '' when empty, null when the box can't be
+// found. Dim text there is a suggestion Claude Code offers, not a draft.
+async function promptDraft(name) {
+  const res = await tmux('capture-pane', '-p', '-e', '-t', `=${name}:`);
+  if (!res.ok) return null;
+  const rows = res.out.split('\n');
+  const plain = rows.map(r => r.replace(ANSI, ''));
+  const isRule = r => /^\s*─{8,}/.test(r);
+  let close = plain.length - 1;
+  while (close >= 0 && !isRule(plain[close])) close--;
+  let open = close - 1;
+  while (open >= 0 && !isRule(plain[open])) open--;
+  if (open < 0 || close - open > 12 || !/^\s*❯/.test(plain[open + 1] || '')) return null;
+  return rows.slice(open + 1, close)
+    .map(r => r.replace(/\x1b\[2m[\s\S]*?(?=\x1b\[(?:0|22)?m|$)/g, '').replace(ANSI, ''))
+    .join(' ').replace(/^\s*❯/, '').trim();
+}
+
+let handoffBusy = false;
+async function handoffTick() {
+  if (handoffBusy) return;
+  handoffBusy = true;
+  try {
+    const cfg = await loadConfig();
+    const st = await loadHandoffState();
+    const { tmuxRunning, sessions } = await listSessions();
+    if (!tmuxRunning) return;
+    let dirty = false;
+    for (const s of sessions) {
+      try {
+        if (await considerHandoff(s, cfg, st)) dirty = true;
+      } catch (err) {
+        console.error(`warm handoff: ${s.name}: ${err.message}`);
+      }
+    }
+    const live = new Set(sessions.map(s => s.name));
+    for (const name of handoffSentAt.keys()) if (!live.has(name)) handoffSentAt.delete(name);
+    for (const [uuid, rec] of Object.entries(st.sent)) {
+      if (Date.now() - rec.at > 7 * 24 * 3600_000) { delete st.sent[uuid]; dirty = true; }
+    }
+    if (dirty) await saveHandoffState();
+  } finally {
+    handoffBusy = false;
+  }
+}
+
+// Returns true when it changed the persisted state.
+async function considerHandoff(s, cfg, st) {
+  const wh = cfg.warmHandoff;
+  const uuid = sessionUuid(s.pid, s.cwd);
+  const info = uuid && await transcriptTail(join(projectDir(s.cwd), `${uuid}.jsonl`));
+  if (!info) { handoffSentAt.delete(s.name); return false; }
+
+  // Once per idle period. The handoff turn writes assistant records of its
+  // own, which restart the idle clock; only a person's next prompt re-arms.
+  let changed = false;
+  const sent = st.sent[uuid];
+  if (sent) {
+    if (!info.prompts.some(p => p.at > sent.at && !isHandoffPrompt(p.text, sent.command))) {
+      handoffSentAt.set(s.name, sent.at);
+      return false;
+    }
+    delete st.sent[uuid];
+    changed = true;
+  }
+  handoffSentAt.delete(s.name);
+
+  if (!handoffView(s.name, cfg, st).enabled) return changed;
+  const last = info.lastAssistant;
+  if (!last || last.tokens < wh.minTokens) return changed;
+  // A prompt newer than the last answer means a turn in flight or cut short.
+  if (info.prompts.length && info.prompts.at(-1).at > last.at) return changed;
+  const idleMin = (Date.now() - last.at) / 60_000;
+  if (idleMin < wh.idleMinutes || idleMin >= HANDOFF_TOO_LATE_MIN) return changed;
+
+  // Never type into a session that is busy, asking something, or holding a
+  // half-written message.
+  if ((await peek(s.name)).status !== 'idle') return changed;
+  if (await promptDraft(s.name) !== '') return changed;
+
+  // Recorded before sending, so a failure mid-send can't cause a second one.
+  const rec = { at: Date.now(), command: wh.command, name: s.name };
+  st.sent[uuid] = rec;
+  await saveHandoffState();
+  await sendKeys(s.name, { kind: 'command', text: wh.command });
+  handoffSentAt.set(s.name, rec.at);
+  console.log(`warm handoff: sent ${wh.command} to ${s.name} (idle ${Math.floor(idleMin)}m, ${last.tokens} tokens)`);
+  return changed;
+}
+
 // ------------------------------------------------ claude update & recycling
 
 let versionCache = { value: null, at: 0 };
@@ -562,8 +792,7 @@ function ensureRestartLoop() {
 // nothing to continue exits immediately and the tmux session dies with it.
 function hasConversation(cwd) {
   try {
-    const proj = join(HOME, '.claude/projects', cwd.replace(/[^A-Za-z0-9]/g, '-'));
-    return readdirSync(proj).some(f => f.endsWith('.jsonl'));
+    return readdirSync(projectDir(cwd)).some(f => f.endsWith('.jsonl'));
   } catch {
     return false;
   }
@@ -800,6 +1029,7 @@ const server = createServer(async (req, res) => {
       const current = await claudeVersion();
       const peeked = await Promise.all(sessions.map(async s => ({ ...s, peek: await peek(s.name, 0, 300) })));
       if (tmuxRunning) await saveSnapshot(sessions);
+      const handoff = await loadHandoffState();
       return json(res, 200, {
         host: HOSTNAME,
         now: Date.now(),
@@ -809,6 +1039,7 @@ const server = createServer(async (req, res) => {
           status: s.peek.status,
           peek: s.peek.lines,
           stale: !!(s.version && current && compareVersions(s.version, current) < 0),
+          handoff: handoffView(s.name, cfg, handoff),
         })),
         folders: await listFolders(sessions, cfg),
         restore: await restoreOffer(tmuxRunning, sessions),
@@ -861,6 +1092,10 @@ const server = createServer(async (req, res) => {
       if (req.method === 'POST' && sub === '/rollover') {
         return json(res, 200, await rollover(name));
       }
+      if (req.method === 'POST' && sub === '/handoff') {
+        const body = await readBody(req);
+        return json(res, 200, await setHandoffToggle(name, body.enabled));
+      }
       if (req.method === 'GET' && sub === '/peek') {
         const n = Math.min(Number(url.searchParams.get('lines') || 40), 200);
         return json(res, 200, await peek(name, n, 300));
@@ -884,4 +1119,6 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`muxboard listening on http://${HOST}:${PORT} (root: ${REPOS_ROOT})`);
+  setTimeout(handoffTick, 5000);
+  setInterval(handoffTick, HANDOFF_TICK_MS);
 });

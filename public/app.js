@@ -375,6 +375,7 @@ function renderDetail() {
   $('#dName').textContent = s.name;
   $('#dAge').textContent = age(s.createdAt);
   $('#dMeta').innerHTML = `<span>${esc(s.repo)}</span>${badges(s)}`;
+  renderHandoff(s);
 
   // The screen sticks to the bottom like a terminal: follow new output unless
   // the user has scrolled up to read.
@@ -387,6 +388,37 @@ function renderDetail() {
   syncActionButtons();
   sendRect = $('#sendBtn').getBoundingClientRect();
 }
+
+// Warm handoff: the per-session switch, and when this idle period's handoff
+// went out. A tap is shown at once; polls don't overwrite it until the server
+// has answered.
+let handoffSaving = false;
+
+function renderHandoff(s) {
+  const h = s.handoff || { enabled: false, sentAt: null };
+  if (!handoffSaving) $('#dHandoff').checked = h.enabled;
+  const sent = $('#dHandoffSent');
+  sent.hidden = !h.sentAt;
+  if (h.sentAt) {
+    sent.textContent = `handoff sent ${new Date(h.sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  }
+}
+
+$('#dHandoff').addEventListener('change', async e => {
+  const name = selected;
+  const enabled = e.target.checked;
+  handoffSaving = true;
+  try {
+    await api(`/api/sessions/${encodeURIComponent(name)}/handoff`, { method: 'POST', body: { enabled } });
+    toast(`${name}: auto handoff ${enabled ? 'on' : 'off'}`);
+  } catch (err) {
+    e.target.checked = !enabled;
+    toast(err.message, true);
+  } finally {
+    handoffSaving = false;
+    poll();
+  }
+});
 
 // Selection drives the URL hash so a reload lands on the same session, and on
 // a phone the browser's back button returns to the list.
@@ -682,6 +714,28 @@ function renderSettings() {
   }
 }
 
+function renderHandoffSettings() {
+  const w = conf().warmHandoff || {};
+  $('#whEnabled').checked = !!w.enabled;
+  $('#whIdle').value = w.idleMinutes ?? '';
+  $('#whTokens').value = w.minTokens ?? '';
+  $('#whCommand').value = w.command ?? '';
+}
+
+$('#whForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const warmHandoff = {
+    enabled: $('#whEnabled').checked,
+    idleMinutes: Number($('#whIdle').value),
+    minTokens: Number($('#whTokens').value),
+    command: $('#whCommand').value.trim(),
+  };
+  if (await saveConfig({ ...conf(), warmHandoff })) {
+    renderHandoffSettings(); // the server swaps an invalid value for its default
+    toast('handoff settings saved');
+  }
+});
+
 function showSettingsTab(name) {
   for (const seg of $('#segments').querySelectorAll('.seg')) {
     const on = seg.dataset.tab === name;
@@ -712,6 +766,7 @@ function renderDiagnostics() {
 
 function openSettings() {
   renderSettings();
+  renderHandoffSettings();
   renderAuth();
   clearPasswordFields();
   renderDiagnostics();

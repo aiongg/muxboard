@@ -43,6 +43,16 @@ and refuses rather than guesses — if rollover starts failing with "could not
 identify the session transcript" after a Claude Code update, that file's
 schema is the suspect.
 
+Warm handoff (`handoffTick()`, once a minute) adds a third: the transcript
+JSONL itself. `readTail()` reads only the last 256 KB and takes the last
+non-sidechain, non-synthetic `assistant` record's `timestamp` and `usage`
+(idle time and context size) and the `user` records that carry a `promptId`
+and a human or absent `origin` (real prompts — tool results, task
+notifications and `isMeta` skill text are not). `promptDraft()` reads the input
+box between the last two `─` rules from an escaped capture, ignoring dim
+suggestion text. If either format shifts, the feature goes quiet rather than
+misfiring: a missing record or an unfound input box means no send.
+
 User-tailored settings (repo roots, send-key shortcuts) belong in
 `~/.config/muxboard/config.json`, never hardcoded — the app has a settings
 sheet for editing them. That file is sent to the client on every poll, so

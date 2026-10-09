@@ -123,6 +123,8 @@ const CONFIG = {
     { label: '↵ enter', key: 'enter' },
     { label: 'esc', key: 'escape' },
   ],
+  rolloverCommand: '/restore',
+  warmHandoff: { enabled: true, idleMinutes: 50, minTokens: 200000, command: '/handoff' },
 };
 
 function state() {
@@ -143,6 +145,8 @@ function state() {
       stale: s.version !== '2.1.219',
       status: s.status,
       peek: s.peek,
+      // One idle session shows a handoff that already went out.
+      handoff: { enabled: s.name !== 'notebooks', sentAt: s.name === 'toy-compiler' ? now - 12 * 60_000 : null },
     })),
     folders: FOLDERS,
     restore: null,

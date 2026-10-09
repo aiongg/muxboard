@@ -80,7 +80,15 @@
           <h1 id="dName" class="detail-name"></h1>
           <span class="age" id="dAge"></span>
         </header>
-        <div class="meta detail-meta" id="dMeta"></div>
+        <div class="meta detail-meta">
+          <span class="meta-items" id="dMeta"></span>
+          <span class="badge sent" id="dHandoffSent" hidden></span>
+          <label class="toggle mini" title="Send the handoff command once while a big idle session's cache is still warm">
+            <input type="checkbox" id="dHandoff">
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span>auto handoff</span>
+          </label>
+        </div>
         <div class="screen" id="dScreen" role="log" aria-label="Terminal screen" tabindex="0"
              title="Click to focus — arrow keys, enter and esc then go to the session"><div class="screen-text" id="dScreenText"></div></div>
         <div class="detail-bar">
@@ -137,6 +145,7 @@
     <div class="segments" id="segments" role="tablist" aria-label="Settings sections">
       <button class="seg on" data-tab="folders" role="tab" aria-selected="true">folders</button>
       <button class="seg" data-tab="shortcuts" role="tab" aria-selected="false">shortcuts</button>
+      <button class="seg" data-tab="handoff" role="tab" aria-selected="false">handoff</button>
       <button class="seg" data-tab="security" role="tab" aria-selected="false">security</button>
     </div>
 
@@ -159,6 +168,26 @@
       <p class="set-hint">For a keypress use <code>@enter</code>, <code>@esc</code>, <code>@up</code>,
         <code>@down</code>, <code>@left</code>, <code>@right</code>, <code>@tab</code>,
         <code>@shift-tab</code> or <code>@backspace</code>.</p>
+    </div>
+
+    <div class="panel" data-panel="handoff" role="tabpanel" hidden>
+      <form class="whform" id="whForm">
+        <label class="toggle">
+          <input type="checkbox" id="whEnabled">
+          <span class="toggle-track" aria-hidden="true"></span>
+          <span>On for sessions by default</span>
+        </label>
+        <label class="field"><span>idle minutes</span>
+          <input id="whIdle" type="number" inputmode="numeric" min="1" max="55" step="1" required></label>
+        <label class="field"><span>min context tokens</span>
+          <input id="whTokens" type="number" inputmode="numeric" min="0" max="10000000" step="1000" required></label>
+        <label class="field"><span>command</span>
+          <input id="whCommand" autocomplete="off" spellcheck="false" maxlength="200" required></label>
+        <button type="submit" class="btn">save</button>
+      </form>
+      <p class="set-hint">A session idle this long, with at least this much context, gets the command
+        typed in once — while its one-hour prompt cache is still warm. Each session's detail view
+        has its own switch.</p>
     </div>
 
     <div class="panel" data-panel="security" role="tabpanel" hidden>

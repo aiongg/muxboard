@@ -197,6 +197,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   overflow: hidden;
 }
 .detail-meta { flex: none; padding: 10px 14px 0; }
+.meta-items { display: contents; }
+.badge.sent { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); text-transform: none; letter-spacing: .04em; }
 
 /* The signature element: a live screen into the session's terminal. Fills
    the pane, bottom-anchored like a terminal, scroll up for recent history
@@ -361,6 +363,11 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .toggle input:checked + .toggle-track { background: var(--amber-soft); }
 .toggle input:checked + .toggle-track::after { transform: translateX(18px); background: var(--amber); }
 .toggle input:focus-visible + .toggle-track { outline: 2px solid var(--amber); outline-offset: 2px; }
+/* The per-session switch rides at the end of the detail meta line. */
+.toggle.mini { margin-left: auto; padding: 0; gap: 8px; font-size: 11px; letter-spacing: .04em; min-height: 28px; }
+.toggle.mini .toggle-track { width: 34px; height: 20px; }
+.toggle.mini .toggle-track::after { top: 3px; left: 3px; width: 14px; height: 14px; }
+.toggle.mini input:checked + .toggle-track::after { transform: translateX(14px); }
 
 .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .chip {
@@ -419,6 +426,18 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .addrow input:focus { outline: 2px solid var(--amber); border-color: transparent; }
 .addrow #scLabel { flex: 1 1 34%; }
 .addrow #scSend { flex: 2 1 48%; }
+
+.whform { display: flex; flex-direction: column; gap: 10px; }
+.whform .toggle { padding-bottom: 4px; }
+.field { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.field span { flex: 1; }
+.field input {
+  flex: 0 1 60%; min-width: 0; min-height: 44px;
+  font: 14px var(--mono); color: var(--cream);
+  background: var(--panel-up); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0 12px;
+}
+.field input:focus { outline: 2px solid var(--amber); border-color: transparent; }
 
 .pwform { display: flex; flex-direction: column; gap: 10px; }
 .pwfield { position: relative; display: flex; }
