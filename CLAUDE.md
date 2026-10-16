@@ -60,11 +60,14 @@ it per pid; `sessionUuid()`, `projectDir()` and `hasConversation()` take the
 session's own account home, so rollover, warm handoff and the rolling restart
 work in any account. The rolling restart and reboot restore pin the session's
 old account; a new session gets whatever the zsh login shell sets, which
-`activeAccount()` reads the same way (`zsh -lc`, cached 10 s). `reopen()`
-kills an idle session and recreates it under the same name in the active
-account, with `--resume <uuid>` for a small context the new account can see,
-and otherwise fresh plus the restore command once `waitForPrompt()` sees an
-empty input box.
+`cachedActiveAccount()` reads the same way (`zsh -lc`, cached 10 s, refreshed
+in the background, never spawned for a single-account setup). `reopen()` runs
+every check that can fail first, then kills an idle session and recreates it
+under the same name in the active account: `--resume <uuid>` for a small
+context the new account can see, otherwise fresh plus the restore command once
+`waitForPrompt()` sees an empty input box. A failed relaunch is retried once
+in the old account. `accounts.list` and `accounts.use` run programs, so only
+the config file on disk sets them; `saveConfig()` ignores the client's values.
 
 User-tailored settings (repo roots, send-key shortcuts) belong in
 `~/.config/muxboard/config.json`, never hardcoded — the app has a settings

@@ -163,12 +163,15 @@ by hand:
   `projects/` folder can see the old transcript; otherwise reopen starts fresh,
   and your restore command must find the transcript in the other account's
   folder. `list` and `use` are optional commands, each an argv array run
-  without a shell (a leading `~/` in the program path is expanded). `list`
+  without a shell (a leading `~/` in the program path is expanded). They are
+  read from the config file only: saving settings from the app keeps the
+  stored values and ignores any the app sends. `list`
   prints one account name per line; `use` switches the account your login
   shell gives new sessions, with `{name}` replaced by the chosen name. Names
-  must match `[a-z0-9][a-z0-9_-]*`. Muxboard reads the active account by
-  running `zsh -lc` and printing `CLAUDE_CONFIG_DIR`, so `use` has to change
-  what a new login shell sets.
+  must match `[a-z0-9][a-z0-9_-]*`. The active account is whatever a login
+  shell (`zsh -lc`) sets as `CLAUDE_CONFIG_DIR`, so `use` has to change what a
+  new login shell sets. Muxboard only runs that shell when some session uses a
+  non-default account or `list` or `use` is configured.
 
 Environment overrides:
 

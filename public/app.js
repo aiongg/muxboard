@@ -554,9 +554,20 @@ $('#freshBtn').addEventListener('click', e => twoTap('fresh', e.currentTarget, n
 // Restart the session in the active account. The server resumes a small
 // context as is and starts a big one fresh from its transcript, and may wait
 // for the new TUI before it answers.
-$('#reopenBtn').addEventListener('click', e => twoTap('reopen', e.currentTarget, name => {
+// The target account is the one on the button when it was armed; the server
+// refuses if new sessions have moved elsewhere since.
+let reopenTarget = null;
+$('#reopenBtn').addEventListener('click', e => {
+  if (!armed.has(`reopen:${selected}`)) reopenTarget = state?.accounts?.active;
+  twoTap('reopen', e.currentTarget, reopenSession);
+});
+
+// A request the client gave up on may still be working on the server.
+const stillRunning = e => e.name === 'AbortError' ? 'may still be running; check the list' : e.message;
+
+function reopenSession(name) {
   toast(`${name}: reopening…`);
-  api(`/api/sessions/${encodeURIComponent(name)}/reopen`, { method: 'POST', timeout: 45000 })
+  api(`/api/sessions/${encodeURIComponent(name)}/reopen`, { method: 'POST', body: { account: reopenTarget }, timeout: 60000 })
     .then(r => {
       const where = `${name}: reopened in ${r.account}`;
       if (r.path === 'continue') toast(`${where}, continued`);
@@ -565,8 +576,8 @@ $('#reopenBtn').addEventListener('click', e => twoTap('reopen', e.currentTarget,
       else toast(`${where}, but it never became ready — ${conf().rolloverCommand || 'restore'} not sent`, true);
       setTimeout(poll, 800);
     })
-    .catch(e => toast(e.message, true));
-}));
+    .catch(e => toast(`${name}: ${stillRunning(e)}`, true));
+}
 
 $('#stopBtn').addEventListener('click', e => twoTap('stop', e.currentTarget, name => {
   api(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' })
@@ -815,13 +826,13 @@ async function renderAccountSettings() {
     b.addEventListener('click', async () => {
       b.disabled = true;
       try {
-        const r = await api('/api/accounts/active', { method: 'POST', body: { name: b.dataset.account }, timeout: 20000 });
+        const r = await api('/api/accounts/active', { method: 'POST', body: { name: b.dataset.account }, timeout: 30000 });
         toast(`new sessions: ${r.active ?? '?'}`);
         poll();
         renderAccountSettings();
       } catch (e) {
         b.disabled = false;
-        toast(e.message, true);
+        toast(`account switch ${stillRunning(e)}`, true);
       }
     });
   }

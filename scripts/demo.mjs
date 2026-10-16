@@ -184,6 +184,8 @@ createServer(async (req, res) => {
   }
   const reopen = pathname.match(/^\/api\/sessions\/([^/]+)\/reopen$/);
   if (reopen && req.method === 'POST') {
+    const { account } = await readJson(req);
+    if (account !== activeAccount) return send(res, 409, { error: `new sessions now start in ${activeAccount} — check and try again` });
     const s = SESSIONS.find(x => x.name === decodeURIComponent(reopen[1]));
     if (s) s.account = activeAccount;
     return send(res, 200, { name: s?.name, account: activeAccount, path: 'continue', tokens: 42000, sent: false });

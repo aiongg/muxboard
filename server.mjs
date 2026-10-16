@@ -242,6 +242,12 @@ async function loadConfig() {
 
 async function saveConfig(raw) {
   const cfg = normalizeConfig(raw);
+  // The account commands run programs, so only the file on disk sets them;
+  // whatever a client sends for them is ignored.
+  let stored = null;
+  try { stored = JSON.parse(await readFile(CONFIG_FILE, 'utf8')); } catch { /* none yet */ }
+  const { list, use } = cleanAccounts(stored?.accounts);
+  cfg.accounts = { ...cfg.accounts, list, use };
   for (const r of cfg.roots) expandDir(r); // same $HOME rule as session dirs
   configCache = cfg;
   await mkdir(CONFIG_DIR, { recursive: true });
@@ -376,14 +382,13 @@ const configDirCache = new Map();
 // Only CLAUDE_CONFIG_DIR is kept; every other variable is discarded on the spot.
 function processConfigDir(pid) {
   if (configDirCache.has(pid)) return configDirCache.get(pid);
-  let dir = null;
+  let dir = '';
   try {
-    dir = '';
     for (const entry of readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0')) {
       if (entry.startsWith('CLAUDE_CONFIG_DIR=')) { dir = entry.slice('CLAUDE_CONFIG_DIR='.length); break; }
     }
   } catch {
-    dir = null;
+    return null; // not cached: the next poll may be able to read it
   }
   configDirCache.set(pid, dir);
   return dir;
@@ -408,8 +413,9 @@ function childEnv() {
 }
 
 // The active account is whatever a new session would get: sessions start
-// through a zsh login shell, so ask one. Polls get the cached value and
-// refresh it in the background once it is older than ACTIVE_TTL_MS.
+// through a zsh login shell, so ask one. Polls never wait for it: they get the
+// cached value (null before the first read) and refresh it in the background
+// once it is older than ACTIVE_TTL_MS.
 async function readActiveAccount() {
   try {
     const { stdout } = await exec('/bin/zsh', ['-lc', 'print -r -- "${CLAUDE_CONFIG_DIR-}"'],
@@ -432,28 +438,32 @@ function refreshActive() {
   return read;
 }
 
-async function activeAccount(fresh = false) {
-  if (fresh) return refreshActive();
-  if (!activeCache.at) return activeRead || refreshActive();
-  if (Date.now() - activeCache.at > ACTIVE_TTL_MS && !activeRead) refreshActive();
+const activeAccountNow = () => refreshActive();
+
+function cachedActiveAccount() {
+  if (!activeRead && (!activeCache.at || Date.now() - activeCache.at > ACTIVE_TTL_MS)) refreshActive();
   return activeCache.value;
 }
 
-function toolError(err) {
-  return String(err.stderr || err.message || err).trim().split('\n')[0].slice(0, 200);
-}
+// A setup with one account never pays for the shell spawn.
+const accountsInUse = (sessions, cfg) =>
+  !!(cfg.accounts.list || cfg.accounts.use || sessions.some(s => s.account && s.account !== 'default'));
 
+// The tool's own output stays in the server log; the client gets the exit code.
 async function runAccountTool(argv, timeout) {
   const [cmd, ...args] = argv;
-  const { stdout } = await exec(cmd.replace(/^~(?=\/)/, HOME), args, { timeout, env: childEnv() });
-  return stdout;
+  try {
+    const { stdout } = await exec(cmd.replace(/^~(?=\/)/, HOME), args, { timeout, env: childEnv() });
+    return stdout;
+  } catch (err) {
+    console.error(`account command ${cmd} failed: ${String(err.stderr || err.message || err).trim().slice(0, 500)}`);
+    throw httpError(500, `account command failed (exit ${err.code ?? err.signal ?? '?'})`);
+  }
 }
 
 async function accountNames(cfg) {
   if (!cfg.accounts.list) return [];
-  let out;
-  try { out = await runAccountTool(cfg.accounts.list, 10_000); }
-  catch (err) { throw httpError(500, `account list failed: ${toolError(err)}`); }
+  const out = await runAccountTool(cfg.accounts.list, 10_000);
   return [...new Set(out.split('\n').map(l => l.trim()).filter(n => ACCOUNT_NAME.test(n)))].slice(0, 32);
 }
 
@@ -461,9 +471,8 @@ async function useAccount(cfg, name) {
   if (!cfg.accounts.use) throw httpError(400, 'no account switch command configured');
   if (!ACCOUNT_NAME.test(name)) throw httpError(400, 'invalid account name');
   const argv = cfg.accounts.use.map(a => a.replaceAll('{name}', name));
-  try { await runAccountTool(argv, 15_000); }
-  catch (err) { throw httpError(500, `account switch failed: ${toolError(err)}`); }
-  const active = await activeAccount(true);
+  await runAccountTool(argv, 15_000);
+  const active = await activeAccountNow();
   return { active: active?.label ?? null };
 }
 
@@ -679,44 +688,50 @@ async function waitForPrompt(name, ms) {
   return false;
 }
 
-async function reopen(name) {
+// expect is the active account the client showed when the button was armed;
+// a switch since then means the user agreed to a different target.
+async function reopen(name, expect) {
   if (reopening.has(name)) throw httpError(409, 'already reopening');
-  const { sessions } = await listSessions();
-  const s = sessions.find(x => x.name === name);
-  if (!s) throw httpError(404, 'no such session');
-  const { status } = await peek(name);
-  if (status !== 'idle') throw httpError(409, `session is ${status} — reopen it when it is idle`);
-  const active = await activeAccount(true);
-  if (!active) throw httpError(500, 'could not determine the active account');
-  const cfg = await loadConfig();
-
-  // Everything that decides the path is read before the old session dies.
-  const oldHome = sessionHome(s), newHome = claudeHome(active.dir);
-  const uuid = sessionUuid(s.pid, s.cwd, oldHome);
-  const info = uuid && await transcriptTail(join(projectDir(s.cwd, oldHome), `${uuid}.jsonl`));
-  const tokens = info?.lastAssistant?.tokens ?? 0;
-  // --resume only finds transcripts under the new account's own projects
-  // folder, so it is used only when that account can see this one.
-  const visible = !!uuid && existsSync(join(projectDir(s.cwd, newHome), `${uuid}.jsonl`));
-  let path;
-  if (!uuid) {
-    if (!hasConversation(s.cwd, newHome)) throw httpError(500, 'could not identify the session transcript');
-    path = 'continue';
-  } else if (!info) {
-    path = 'new'; // registered, but no turn was ever recorded
-  } else {
-    path = tokens <= cfg.accounts.freshAbove && visible ? 'continue' : 'transcript';
-  }
-
   reopening.add(name);
-  pendingRestart.delete(name);
   try {
+    if (restarting.has(name) || pendingRestart.has(name)) throw httpError(409, 'a restart is queued for this session');
+    const { sessions } = await listSessions();
+    const s = sessions.find(x => x.name === name);
+    if (!s) throw httpError(404, 'no such session');
+    const { status } = await peek(name);
+    if (status !== 'idle') throw httpError(409, `session is ${status} — reopen it when it is idle`);
+    if (await promptDraft(name) !== '') throw httpError(409, 'input box not empty');
+    const active = await activeAccountNow();
+    if (!active) throw httpError(500, 'could not determine the active account');
+    if (active.label !== expect) throw httpError(409, `new sessions now start in ${active.label} — check and try again`);
+    const cfg = await loadConfig();
+
+    // Everything that can fail is checked before the old session dies.
+    const target = expandDir(s.cwd);
+    const oldHome = sessionHome(s), newHome = claudeHome(active.dir);
+    const uuid = sessionUuid(s.pid, s.cwd, oldHome);
+    if (!uuid) throw httpError(409, "could not identify the session's conversation");
+    const info = await transcriptTail(join(projectDir(s.cwd, oldHome), `${uuid}.jsonl`));
+    const tokens = info?.lastAssistant?.tokens ?? 0;
+    // --resume only finds transcripts under the new account's own projects
+    // folder, so it is used only when that account can see this one.
+    const visible = existsSync(join(projectDir(s.cwd, newHome), `${uuid}.jsonl`));
+    const path = !info ? 'new' // registered, but no turn was ever recorded
+      : tokens <= cfg.accounts.freshAbove && visible ? 'continue' : 'transcript';
+
     await killSession(name);
-    const made = await createSession({
-      dir: s.cwd, name, configDir: active.dir,
-      cont: path === 'continue' && !uuid,
-      resume: path === 'continue' && uuid ? uuid : undefined,
-    });
+    let made;
+    try {
+      made = await createSession({
+        dir: target, name, configDir: active.dir, resume: path === 'continue' ? uuid : undefined,
+      });
+    } catch (err) {
+      // Put the conversation back where it was rather than leave nothing running.
+      try {
+        await createSession({ dir: target, name, configDir: s.configDir ?? undefined, resume: info ? uuid : undefined });
+      } catch { /* report the original failure */ }
+      throw err;
+    }
     const out = { name: made.name, account: active.label, path, tokens, sent: false };
     if (path === 'transcript') {
       if (!await waitForPrompt(made.name, REOPEN_READY_MS)) return out;
@@ -1245,7 +1260,7 @@ const server = createServer(async (req, res) => {
       const peeked = await Promise.all(sessions.map(async s => ({ ...s, peek: await peek(s.name, 0, 300) })));
       if (tmuxRunning) await saveSnapshot(sessions);
       const handoff = await loadHandoffState();
-      const active = await activeAccount();
+      const active = accountsInUse(sessions, cfg) ? cachedActiveAccount() : null;
       return json(res, 200, {
         host: HOSTNAME,
         now: Date.now(),
@@ -1278,7 +1293,7 @@ const server = createServer(async (req, res) => {
 
     if (req.method === 'GET' && path === '/api/accounts') {
       const cfg = await loadConfig();
-      const active = await activeAccount(true);
+      const active = await activeAccountNow();
       return json(res, 200, { active: active?.label ?? null, names: await accountNames(cfg) });
     }
 
@@ -1321,7 +1336,8 @@ const server = createServer(async (req, res) => {
         return json(res, 200, await rollover(name));
       }
       if (req.method === 'POST' && sub === '/reopen') {
-        return json(res, 200, await reopen(name));
+        const body = await readBody(req);
+        return json(res, 200, await reopen(name, String(body.account ?? '')));
       }
       if (req.method === 'POST' && sub === '/handoff') {
         const body = await readBody(req);
