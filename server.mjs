@@ -156,8 +156,9 @@ const DEFAULT_WARM_HANDOFF = { enabled: true, idleMinutes: 50, minTokens: 200000
 const HANDOFF_MAX_IDLE_MIN = 55;
 const HANDOFF_TOO_LATE_MIN = 58;
 
-// list and use are argv arrays run without a shell; null hides the picker.
-const DEFAULT_ACCOUNTS = { freshAbove: 100000, list: null, use: null };
+// list, use, dir and add are argv arrays run without a shell; null hides the
+// picker. labels maps an account name to a display name.
+const DEFAULT_ACCOUNTS = { freshAbove: 100000, list: null, use: null, dir: null, add: null, labels: {} };
 
 const defaultConfig = () => ({
   roots: [shortPath(REPOS_ROOT)],
@@ -216,19 +217,34 @@ function cleanWarmHandoff(raw) {
 }
 
 // The account commands are argv arrays: no shell ever parses them, and an
-// account name only ever replaces "{name}" inside one element. A use command
-// without "{name}" could not say which account to switch to.
+// account name only ever replaces "{name}" inside one element. A use, dir or
+// add command without "{name}" could not say which account it is about.
 function cleanAccounts(raw) {
   const d = DEFAULT_ACCOUNTS;
   const argv = v => Array.isArray(v) && v.length >= 1 && v.length <= 16 &&
     v.every(a => typeof a === 'string' && a.length <= 200) && v[0].trim() ? [...v] : null;
-  const use = argv(raw?.use);
+  const named = v => { const a = argv(v); return a && a.some(x => x.includes('{name}')) ? a : null; };
   return {
     freshAbove: Number.isInteger(raw?.freshAbove) && raw.freshAbove >= 0 && raw.freshAbove <= 10_000_000
       ? raw.freshAbove : d.freshAbove,
     list: argv(raw?.list),
-    use: use && use.some(a => a.includes('{name}')) ? use : null,
+    use: named(raw?.use),
+    dir: named(raw?.dir),
+    add: named(raw?.add),
+    labels: cleanLabels(raw?.labels),
   };
+}
+
+// Labels are display-only, so the client may set them. An empty one is dropped.
+function cleanLabels(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [name, v] of Object.entries(raw).slice(0, 64)) {
+    if (!ACCOUNT_NAME.test(name) || typeof v !== 'string') continue;
+    const label = v.replace(/[\x00-\x1f\x7f-\x9f]/g, '').trim().slice(0, 32).trim();
+    if (label) out[name] = label;
+  }
+  return out;
 }
 
 let configCache = null;
@@ -243,11 +259,11 @@ async function loadConfig() {
 async function saveConfig(raw) {
   const cfg = normalizeConfig(raw);
   // The account commands run programs, so only the file on disk sets them;
-  // whatever a client sends for them is ignored.
+  // whatever a client sends for them is ignored. Labels come from the client.
   let stored = null;
   try { stored = JSON.parse(await readFile(CONFIG_FILE, 'utf8')); } catch { /* none yet */ }
-  const { list, use } = cleanAccounts(stored?.accounts);
-  cfg.accounts = { ...cfg.accounts, list, use };
+  const { list, use, dir, add } = cleanAccounts(stored?.accounts);
+  cfg.accounts = { ...cfg.accounts, list, use, dir, add };
   for (const r of cfg.roots) expandDir(r); // same $HOME rule as session dirs
   configCache = cfg;
   await mkdir(CONFIG_DIR, { recursive: true });
