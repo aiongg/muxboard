@@ -496,6 +496,11 @@ async function peek(name, lines = 0, scrollback = 0) {
 
   let status = 'idle';
   if (/esc to interrupt/i.test(vis.out)) status = 'working';
+  // A turn can end while background shells or subagents keep running. The
+  // footer then counts the shells ("· 2 shells ·") and the agent panel under
+  // it lists "● main" and one row per running agent. Killing the session now
+  // would kill that work.
+  else if (/·\s*\d+\s+(?:shells?|agents?)\s*·|^\s*●\s+main\s*$/m.test(vis.out)) status = 'background';
   // The TUI renders choice dialogs (trust, permissions, plan approval) as a
   // numbered list with a ❯ cursor — that's the "waiting on you" signal.
   if (/❯\s*\d+\.\s/.test(vis.out)) status = 'attention';
