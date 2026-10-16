@@ -355,7 +355,10 @@ function accountsShown() {
 }
 
 // Accounts show their label from the config, else their name.
-const acctLabel = name => conf().accounts?.labels?.[name] || name;
+const acctLabel = name => {
+  const labels = conf().accounts?.labels;
+  return labels && Object.hasOwn(labels, name) && labels[name] || name;
+};
 
 // True when the session runs in an account other than the one new sessions use.
 function otherAccount(s) {
@@ -818,7 +821,7 @@ async function renderAccountSettings() {
   if (!accountsData) list.innerHTML = '<p class="set-hint">loading…</p>';
   let data;
   try {
-    data = await api('/api/accounts', { timeout: 20000 });
+    data = await api('/api/accounts', { timeout: 40000 });
   } catch (e) {
     accountsData = null;
     $('#accountAddForm').hidden = true;
@@ -951,7 +954,7 @@ $('#loginForm').addEventListener('submit', async e => {
   if (btn) btn.disabled = true;
   input.value = '';
   try {
-    const r = await api(`/api/accounts/${encodeURIComponent(name)}/login/code`, { method: 'POST', body: { code }, timeout: 45000 });
+    const r = await api(`/api/accounts/${encodeURIComponent(name)}/login/code`, { method: 'POST', body: { code }, timeout: 60000 });
     closeLogin();
     if (r.loggedIn) toast(`${acctLabel(name)}: logged in${r.email ? ` as ${r.email}` : ''}`);
     else toast(`${acctLabel(name)}: ${r.error || 'not logged in'}`, true);

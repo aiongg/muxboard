@@ -79,12 +79,16 @@ config and retried every five minutes. The same run builds the dir → name map
 account, falling back to `accountLabel()`. `authStatus()` runs `claude auth
 status` per config dir, cached 60 s, and only `loggedIn`, `email` and
 `subscriptionType` leave the server. Login runs `claude auth login --claudeai`
-in a tmux session named `muxboard-login-<name>`, which `listSessions()` skips,
-so the list, rolling restart, snapshot, restore and warm handoff never see it;
-the session routes refuse it and `createSession()` refuses the prefix. The
-sign-in code is a secret: `submitLoginCode()` types it with `send-keys -l`,
-reports tmux failures with a fixed message (tmux's own error would quote its
-argv), drops any pane line holding part of it, and never logs or stores it.
+(with `BROWSER=true`) in a tmux session named `muxboard-login-<name>`, which
+`listSessions()` skips, so the list, rolling restart, snapshot, restore and
+warm handoff never see it; a server holding only login sessions reports
+`tmuxRunning: false`, so a login after a reboot can't overwrite the restore
+offer. Login sessions with no entry in `logins` are killed by `listSessions()`,
+and all of them at startup. The session routes refuse them and
+`createSession()` refuses the prefix. The sign-in code is a secret:
+`pasteSecret()` hands it to `tmux load-buffer` on stdin (never in an argv) and
+pastes it, failures get fixed messages, any pane line holding part of it is
+dropped, and it is never logged or stored.
 
 User-tailored settings (repo roots, send-key shortcuts) belong in
 `~/.config/muxboard/config.json`, never hardcoded — the app has a settings

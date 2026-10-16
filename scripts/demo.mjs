@@ -205,7 +205,7 @@ createServer(async (req, res) => {
   if (pathname === '/api/accounts') {
     return send(res, 200, {
       active: activeAccount, canUse: true, canAdd: true,
-      accounts: ACCOUNTS.map(a => ({ ...a, label: CONFIG.accounts.labels[a.name] ?? null, active: a.name === activeAccount, canLogin: true })),
+      accounts: ACCOUNTS.map(a => ({ ...a, label: Object.hasOwn(CONFIG.accounts.labels, a.name) ? CONFIG.accounts.labels[a.name] : null, active: a.name === activeAccount, canLogin: true })),
     });
   }
   if (pathname === '/api/accounts/active' && req.method === 'POST') {

@@ -237,7 +237,7 @@ function cleanAccounts(raw) {
 
 // Labels are display-only, so the client may set them. An empty one is dropped.
 function cleanLabels(raw) {
-  const out = {};
+  const out = Object.create(null); // an account may be called "constructor"
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (const [name, v] of Object.entries(raw).slice(0, 64)) {
     if (!ACCOUNT_NAME.test(name) || typeof v !== 'string') continue;
@@ -295,11 +295,19 @@ async function listSessions() {
 
   const sessions = [];
   const seen = new Set();
+  // A server holding only login sessions counts as not running, so a login
+  // after a reboot can't save an empty snapshot over the restore offer.
+  let tmuxRunning = false;
   for (const line of res.out.split('\n')) {
     if (!line.trim()) continue;
     const [name, created, attached, panePid, cwd, cmd] = line.split(SEP);
     if (seen.has(name)) continue; // one entry per session (active pane wins)
-    if (isLoginSession(name)) continue; // runs claude, but only to sign in
+    if (isLoginSession(name)) { // runs claude, but only to sign in
+      const account = name.slice(LOGIN_PREFIX.length);
+      if (!logins.has(account) && !loginBusy.has(account)) tmux('kill-session', '-t', `=${name}`); // orphaned
+      continue;
+    }
+    tmuxRunning = true;
     const claude = findClaudeProcess(Number(panePid));
     if (!claude && cmd !== 'claude') continue;
     seen.add(name);
@@ -321,7 +329,7 @@ async function listSessions() {
   const pids = new Set(sessions.map(s => s.pid));
   for (const pid of configDirCache.keys()) if (!pids.has(pid)) configDirCache.delete(pid);
   sessions.sort((a, b) => b.createdAt - a.createdAt);
-  return { tmuxRunning: true, sessions };
+  return { tmuxRunning, sessions };
 }
 
 // Walk the pane's process tree looking for the claude binary.
@@ -494,8 +502,8 @@ async function runAccountTool(argv, timeout) {
 // run fills the name → config dir map (from the dir command) that names each
 // session's account.
 const ACCOUNTS_TTL_MS = 5 * 60_000;
-// A config dir is one line, absolute or under ~; empty means the default one.
-const ACCOUNT_DIR = /^(?:~|\/)[^\x00-\x1f]{0,400}$/;
+// A config dir is one line, absolute or ~/…; empty means the default one.
+const ACCOUNT_DIR = /^(?:~\/|\/)[^\x00-\x1f]{0,400}$/;
 const accountKey = cfg => JSON.stringify([cfg.accounts.list, cfg.accounts.dir]);
 const noAccounts = key => ({ key, at: Date.now(), ok: false, names: [], dirs: new Map(), homes: new Map() });
 let dirsCache = { ...noAccounts(null), at: 0 };
@@ -611,7 +619,7 @@ async function accountsView(cfg) {
   const accounts = await Promise.all(names.map(async name => {
     const st = dirs.has(name) ? await authStatus(dirs.get(name)) : null;
     return {
-      name, label: cfg.accounts.labels[name] ?? null, active: name === activeName,
+      name, label: Object.hasOwn(cfg.accounts.labels, name) ? cfg.accounts.labels[name] : null, active: name === activeName,
       loggedIn: st?.loggedIn ?? null, email: st?.email ?? null, plan: st?.plan ?? null,
       canLogin: dirs.has(name),
     };
@@ -645,6 +653,13 @@ function endLogin(name) {
   return tmux('kill-session', '-t', `=${LOGIN_PREFIX}${name}`);
 }
 
+// Logins left by an earlier run of the server can't be finished: their state is gone.
+async function killLoginSessions() {
+  const res = await tmux('list-sessions', '-F', '#{session_name}');
+  if (!res.ok) return;
+  for (const name of res.out.split('\n')) if (isLoginSession(name)) await tmux('kill-session', '-t', `=${name}`);
+}
+
 async function loginPane(session) {
   const target = `=${session}:`;
   const [dead, pane] = await Promise.all([
@@ -673,16 +688,18 @@ function startLogin(cfg, name) {
     await endLogin(name); // a leftover from an earlier run of the server
     const session = LOGIN_PREFIX + name;
     const account = dir ? `export CLAUDE_CONFIG_DIR=${shq(claudeHome(dir))}; ` : 'unset CLAUDE_CONFIG_DIR; ';
-    const cmd = `unset CLAUDECODE; ${account}exec ${shq(CLAUDE_BIN)} auth login --claudeai`;
-    // Wide enough that the URL is never wrapped by the TUI; -J rejoins tmux's own wraps.
-    const res = await tmux('new-session', '-d', '-s', session, '-x', '1000', '-y', '50', '-c', HOME,
-      '/bin/zsh', '-lc', cmd);
-    if (!res.ok) throw httpError(500, res.err);
-    // Keep the pane after exit, so the final message can still be read.
-    await tmux('set-option', '-w', '-t', `=${session}:`, 'remain-on-exit', 'on');
+    // BROWSER=true: the CLI must not open a browser on this machine.
+    const cmd = `unset CLAUDECODE; export BROWSER=true; ${account}exec ${shq(CLAUDE_BIN)} auth login --claudeai`;
+    // Registered first, so listSessions() never takes it for an orphan.
     const entry = { session, dir, url: null, timer: setTimeout(() => endLogin(name), LOGIN_MAX_MS) };
     entry.timer.unref();
     logins.set(name, entry);
+    // Wide enough that the URL is never wrapped by the TUI; -J rejoins tmux's own wraps.
+    const res = await tmux('new-session', '-d', '-s', session, '-x', '1000', '-y', '50', '-c', HOME,
+      '/bin/zsh', '-lc', cmd);
+    if (!res.ok) { await endLogin(name); throw httpError(500, res.err); }
+    // Keep the pane after exit, so the final message can still be read.
+    await tmux('set-option', '-w', '-t', `=${session}:`, 'remain-on-exit', 'on');
     const until = Date.now() + LOGIN_URL_MS;
     while (Date.now() < until) {
       await sleep(500);
@@ -699,6 +716,22 @@ function startLogin(cfg, name) {
   });
 }
 
+// load-buffer reads the text from stdin into a one-off buffer; paste-buffer -d
+// types it into the pane and deletes the buffer.
+async function pasteSecret(target, text) {
+  const buffer = `muxboard-${randomBytes(8).toString('hex')}`;
+  try {
+    const load = exec('tmux', ['load-buffer', '-b', buffer, '-'], { timeout: 5000 });
+    load.child.stdin.end(text);
+    await load;
+  } catch {
+    return false;
+  }
+  if ((await tmux('paste-buffer', '-d', '-b', buffer, '-t', target)).ok) return true;
+  await tmux('delete-buffer', '-b', buffer);
+  return false;
+}
+
 function submitLoginCode(name, raw) {
   const code = typeof raw === 'string' ? raw.trim() : '';
   if (!LOGIN_CODE.test(code)) throw httpError(400, 'that does not look like a sign-in code');
@@ -712,8 +745,8 @@ function submitLoginCode(name, raw) {
     // A line holding any part of the code is never reported back.
     const leaks = r => r.includes(code) || (code.length >= 12 && (r.includes(code.slice(0, 12)) || r.includes(code.slice(-12))));
     try {
-      // tmux's error text would carry its argv, so failures get a fixed message.
-      if (!(await tmux('send-keys', '-t', target, '-l', '--', code)).ok) throw httpError(500, 'could not type the code');
+      // The code reaches tmux on stdin, never in an argv, and failures get fixed messages.
+      if (!await pasteSecret(target, code)) throw httpError(500, 'could not type the code');
       await sleep(150);
       await tmux('send-keys', '-t', target, 'Enter');
       let done = false, errorLine = null;
@@ -844,8 +877,9 @@ function expandDir(dir) {
 async function createSession({ dir, name, cont, resume, configDir }) {
   const target = expandDir(dir);
   const base = sanitizeName(name) || sanitizeName(basename(target)) || 'session';
-  if (isLoginSession(base)) throw httpError(400, 'that session name is reserved');
+  if (base.startsWith('muxboard-login')) throw httpError(400, 'that session name is reserved');
   const finalName = await uniqueName(base);
+  if (isLoginSession(finalName)) throw httpError(400, 'that session name is reserved');
   const rcName = `${HOSTNAME}:${finalName}`;
   const account = configDir === undefined ? ''
     : configDir ? `export CLAUDE_CONFIG_DIR=${shq(configDir)}; ` : 'unset CLAUDE_CONFIG_DIR; ';
@@ -1661,6 +1695,7 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`muxboard listening on http://${HOST}:${PORT} (root: ${REPOS_ROOT})`);
+  killLoginSessions();
   setTimeout(handoffTick, 5000);
   setInterval(handoffTick, HANDOFF_TICK_MS);
 });
