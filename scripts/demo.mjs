@@ -115,8 +115,8 @@ for (const [name, status, ageMinutes, peek] of MORE) {
 let activeAccount = 'b';
 for (const s of SESSIONS) s.account = s.name === 'toy-compiler' ? 'a' : 'b';
 const ACCOUNTS = [
-  { name: 'a', loggedIn: true, email: 'sam@example.com', plan: 'pro' },
-  { name: 'b', loggedIn: true, email: 'sam@example.org', plan: 'max' },
+  { name: 'a', loggedIn: true, email: 'sam@example.com', plan: 'pro', expires: Date.now() + 4 * 86_400_000 },
+  { name: 'b', loggedIn: true, email: 'sam@example.org', plan: 'max', expires: Date.now() + 26 * 86_400_000 },
   { name: 'c', loggedIn: false, email: null, plan: null },
 ];
 

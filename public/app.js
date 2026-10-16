@@ -830,10 +830,18 @@ async function renderAccountSettings() {
   }
   accountsData = data;
   $('#accountAddForm').hidden = !data.canAdd;
+  // A login lasts about a month; flag the last week so it can be renewed early.
+  const loginExpiry = ms => {
+    if (!ms) return '';
+    const days = (ms - Date.now()) / 86_400_000;
+    if (days <= 0) return ' · <span class="acct-exp out">login expired</span>';
+    const when = new Date(ms).toLocaleDateString([], { month: 'short', day: 'numeric' });
+    return ` · <span class="acct-exp${days < 7 ? ' soon' : ''}">login until ${esc(when)}</span>`;
+  };
   list.innerHTML = data.accounts.map(a => {
     const mark = a.loggedIn == null ? '' : a.loggedIn
       ? '<span class="acct-state in">logged in</span>' : '<span class="acct-state out">not logged in</span>';
-    const meta = [a.name, a.email, a.plan].filter(Boolean).map(esc).join(' · ');
+    const meta = [a.name, a.email, a.plan].filter(Boolean).map(esc).join(' · ') + loginExpiry(a.expires);
     return `
     <div class="acctrow">
       <div class="acct-head">

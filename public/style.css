@@ -491,6 +491,9 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .acct-state.in { color: var(--ok); }
 .acct-state.out { color: var(--danger); }
 .acct-meta { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.acct-exp { white-space: nowrap; }
+.acct-exp.soon { color: var(--amber); }
+.acct-exp.out { color: var(--danger); }
 .acct-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .acct-actions .setrow-on { padding: 0 4px; margin-right: auto; }
 .acct-actions .btn:first-child { margin-right: auto; }

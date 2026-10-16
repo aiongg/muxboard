@@ -75,8 +75,9 @@ simultaneously:
   this appears.
 - **Account management** (optional) — with an account tool configured
   (`accounts.list`, see below), settings gets an **accounts** tab. Each account
-  shows its label (tap to rename), name, email, plan and whether it is logged
-  in, with **use** to make it the account new sessions start in and **log in**
+  shows its label (tap to rename), name, email, plan, whether it is logged
+  in and when the login runs out (amber in its last week; read from the
+  account's `.credentials.json`, so not on macOS), with **use** to make it the account new sessions start in and **log in**
   to sign it in from the phone: Muxboard runs `claude auth login --claudeai`
   in a hidden tmux session, shows the sign-in URL as a link, and types the code
   you paste back into that session. A field below the list creates an account.

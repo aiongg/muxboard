@@ -588,6 +588,8 @@ async function addAccount(cfg, name) {
 }
 
 // `claude auth status` prints JSON; only three of its fields leave the server.
+// The login's end date comes from the credentials file, where Claude Code
+// keeps it on Linux; only that one number is read out of it.
 const STATUS_TTL_MS = 60_000;
 const statusCache = new Map(); // config home → { at, promise }
 
@@ -608,9 +610,19 @@ function authStatus(dir, fresh = false) {
       } catch {
         return null;
       }
-    });
+    })
+    .then(async st => st && { ...st, expires: st.loggedIn ? await loginExpiry(home) : null });
   statusCache.set(home, { at: Date.now(), promise });
   return promise;
+}
+
+async function loginExpiry(home) {
+  try {
+    const v = JSON.parse(await readFile(join(home, '.credentials.json'), 'utf8'))?.claudeAiOauth?.refreshTokenExpiresAt;
+    return Number.isFinite(v) ? v : null;
+  } catch {
+    return null; // macOS keeps credentials in the keychain
+  }
 }
 
 async function accountsView(cfg) {
@@ -620,7 +632,7 @@ async function accountsView(cfg) {
     const st = dirs.has(name) ? await authStatus(dirs.get(name)) : null;
     return {
       name, label: Object.hasOwn(cfg.accounts.labels, name) ? cfg.accounts.labels[name] : null, active: name === activeName,
-      loggedIn: st?.loggedIn ?? null, email: st?.email ?? null, plan: st?.plan ?? null,
+      loggedIn: st?.loggedIn ?? null, email: st?.email ?? null, plan: st?.plan ?? null, expires: st?.expires ?? null,
       canLogin: dirs.has(name),
     };
   }));
