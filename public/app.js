@@ -829,6 +829,10 @@ async function renderAccountSettings() {
     return;
   }
   accountsData = data;
+  // A login still waiting on the server (muxboard reloaded, or the tab was
+  // left) gets its code box back.
+  const pending = data.accounts.find(a => a.login);
+  if (pending && loginBox.hidden) showSignIn(pending.name, pending.login);
   $('#accountAddForm').hidden = !data.canAdd;
   // A login lasts about a month; flag the last week so it can be renewed early.
   const loginExpiry = ms => {
@@ -912,18 +916,44 @@ $('#accountAddForm').addEventListener('submit', async e => {
 let loginName = null;
 const loginBox = $('#loginBox');
 
+let loginUrl = null;
+
+// An installed app on Android opens links in an in-app tab on top of itself;
+// an intent link with no package hands the page to the default browser, so
+// the app stays put while the user signs in and copies the code.
+function signInHref(url) {
+  if (!/Android/i.test(navigator.userAgent) || !matchMedia('(display-mode: standalone)').matches) return url;
+  const u = new URL(url);
+  return `intent://${u.host}${u.pathname}${u.search}#Intent;scheme=https;action=android.intent.action.VIEW;`
+    + `S.browser_fallback_url=${encodeURIComponent(url)};end`;
+}
+
+function showSignIn(name, url) {
+  const reopened = loginName === name && loginUrl === url;
+  loginName = name;
+  loginUrl = url;
+  $('#loginTitle').textContent = `Log in: ${acctLabel(name)}`;
+  $('#loginUrl').href = signInHref(url);
+  $('#loginUrlText').textContent = url;
+  if (!reopened) $('#loginCode').value = '';
+  $('#loginPaste').hidden = !navigator.clipboard?.readText;
+  loginBox.hidden = false;
+  loginBox.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+$('#loginPaste').addEventListener('click', async () => {
+  try {
+    $('#loginCode').value = (await navigator.clipboard.readText()).trim();
+  } catch {
+    toast('could not read the clipboard; paste into the field', true);
+  }
+});
+
 async function startLogin(name, btn) {
   btn.disabled = true;
   try {
     const { url } = await api(`/api/accounts/${encodeURIComponent(name)}/login`, { method: 'POST', timeout: 40000 });
-    loginName = name;
-    $('#loginTitle').textContent = `Log in: ${acctLabel(name)}`;
-    const link = $('#loginUrl');
-    link.href = url;
-    $('#loginUrlText').textContent = url;
-    $('#loginCode').value = '';
-    loginBox.hidden = false;
-    loginBox.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    showSignIn(name, url);
   } catch (e) {
     toast(`log in: ${stillRunning(e)}`, true);
   } finally {
@@ -933,12 +963,13 @@ async function startLogin(name, btn) {
 
 function closeLogin() {
   loginName = null;
+  loginUrl = null;
   loginBox.hidden = true;
   $('#loginCode').value = '';
 }
 
 $('#loginCopy').addEventListener('click', async () => {
-  const url = $('#loginUrl').href;
+  const url = loginUrl;
   try {
     await navigator.clipboard.writeText(url);
   } catch {

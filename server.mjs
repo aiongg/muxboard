@@ -633,7 +633,7 @@ async function accountsView(cfg) {
     return {
       name, label: Object.hasOwn(cfg.accounts.labels, name) ? cfg.accounts.labels[name] : null, active: name === activeName,
       loggedIn: st?.loggedIn ?? null, email: st?.email ?? null, plan: st?.plan ?? null, expires: st?.expires ?? null,
-      canLogin: dirs.has(name),
+      canLogin: dirs.has(name), login: logins.get(name)?.url ?? null,
     };
   }));
   return { active: activeName, accounts, canUse: !!cfg.accounts.use, canAdd: !!cfg.accounts.add };

@@ -80,7 +80,10 @@ simultaneously:
   account's `.credentials.json`, so not on macOS), with **use** to make it the account new sessions start in and **log in**
   to sign it in from the phone: Muxboard runs `claude auth login --claudeai`
   in a hidden tmux session, shows the sign-in URL as a link, and types the code
-  you paste back into that session. A field below the list creates an account.
+  you paste back into that session. On Android, the installed app opens the
+  link in the default browser rather than an in-app tab, a **paste** button
+  fills in the code, and a login still waiting keeps its code box when you
+  come back to the tab. A field below the list creates an account.
   Without a working `accounts.list` — none configured, or the program missing
   or failing — the tab, labels, login and add stay hidden and Muxboard runs
   none of these commands; it logs the failure once and tries again when the
