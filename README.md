@@ -63,11 +63,22 @@ simultaneously:
   the session is idle with an empty input line, never past 58 minutes idle, and
   not again until you send the session a new prompt. Each session has an **auto
   handoff** switch; `warmHandoff.enabled` sets its default.
+- **Accounts** — Claude Code picks its account from `CLAUDE_CONFIG_DIR`
+  (unset means `~/.claude`). If your login shell sets it, Muxboard shows each
+  session's account as a badge (`~/.claude-b` shows as `b`), names the account
+  new sessions will start in, and highlights sessions running in a different
+  one. **reopen in …** (tap twice) restarts an idle session in the active
+  account under the same name. The prompt cache is per account, so the reopened
+  session starts cold either way: a context of up to `freshAbove` tokens is
+  resumed as is; a bigger one starts fresh and gets your restore command with
+  the old transcript's UUID, as **fresh** does. With `accounts.list` and
+  `accounts.use` configured, settings also gets a picker that switches the
+  active account. With a single account none of this appears.
 - **Stop** — kill the tmux session (tap twice to confirm).
 - **Update + rolling restart** — run `claude update` from the app; sessions
   keep running their old binary until restarted, so Muxboard flags stale
-  sessions and can recycle each one with `--continue` (same conversation, new version) as
-  soon as it goes idle.
+  sessions and can recycle each one with `--continue` (same conversation, same
+  account, new version) as soon as it goes idle.
 - **Reboot restore** — the server snapshots the open session set as it polls;
   after a reboot the app offers one-tap restore of each folder's last
   conversation.
@@ -119,7 +130,12 @@ by hand:
     { "label": "esc", "key": "escape" }
   ],
   "rolloverCommand": "/restore",
-  "warmHandoff": { "enabled": true, "idleMinutes": 50, "minTokens": 200000, "command": "/handoff" }
+  "warmHandoff": { "enabled": true, "idleMinutes": 50, "minTokens": 200000, "command": "/handoff" },
+  "accounts": {
+    "freshAbove": 100000,
+    "list": ["~/bin/accounts", "names"],
+    "use": ["~/bin/accounts", "use", "{name}"]
+  }
 }
 ```
 
@@ -140,6 +156,19 @@ by hand:
   answer's input plus cache-read and cache-write tokens; `command` is a slash
   command or plain text, one line, 200 chars. Point it at a skill that writes a
   handoff file.
+- **`accounts`** — multiple Claude accounts (see *Accounts* above).
+  `freshAbove` (default 100000) is the largest context, counted like
+  `minTokens`, that **reopen** resumes; a bigger one starts fresh from the
+  transcript. A context is also resumed only when the new account's
+  `projects/` folder can see the old transcript; otherwise reopen starts fresh,
+  and your restore command must find the transcript in the other account's
+  folder. `list` and `use` are optional commands, each an argv array run
+  without a shell (a leading `~/` in the program path is expanded). `list`
+  prints one account name per line; `use` switches the account your login
+  shell gives new sessions, with `{name}` replaced by the chosen name. Names
+  must match `[a-z0-9][a-z0-9_-]*`. Muxboard reads the active account by
+  running `zsh -lc` and printing `CLAUDE_CONFIG_DIR`, so `use` has to change
+  what a new login shell sets.
 
 Environment overrides:
 

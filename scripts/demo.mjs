@@ -5,7 +5,8 @@
 //
 //   node scripts/demo.mjs        # http://127.0.0.1:8801
 //
-// Every action is a no-op that just reports success.
+// Every action is a no-op that just reports success, except that switching
+// the account and reopening a session update the invented state.
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -107,6 +108,11 @@ for (const [name, status, ageMinutes, peek] of MORE) {
   SESSIONS.push({ name, repo: `~/projects/${name}`, status, ageMinutes, remoteControl: true, attached: false, version: '2.1.219', peek });
 }
 
+// Two accounts: new sessions start in "b", and one idle session still runs in
+// "a", so its badge stands out and its detail view offers a reopen.
+let activeAccount = 'b';
+for (const s of SESSIONS) s.account = s.name === 'toy-compiler' ? 'a' : 'b';
+
 const FOLDERS = ['acme-api', 'docs-site', 'infra', 'toy-compiler', 'website']
   .map(name => ({
     name,
@@ -125,6 +131,7 @@ const CONFIG = {
   ],
   rolloverCommand: '/restore',
   warmHandoff: { enabled: true, idleMinutes: 50, minTokens: 200000, command: '/handoff' },
+  accounts: { freshAbove: 100000, list: ['claude-account', 'names'], use: ['claude-account', 'use', '{name}'] },
 };
 
 function state() {
@@ -147,10 +154,12 @@ function state() {
       peek: s.peek,
       // One idle session shows a handoff that already went out.
       handoff: { enabled: s.name !== 'notebooks', sentAt: s.name === 'toy-compiler' ? now - 12 * 60_000 : null },
+      account: s.account,
     })),
     folders: FOLDERS,
     restore: null,
     config: CONFIG,
+    accounts: { active: activeAccount, switchable: true },
     claude: { version: '2.1.219', updating: false, lastUpdate: null, pending: [] },
   };
 }
@@ -167,6 +176,18 @@ createServer(async (req, res) => {
 
   if (pathname === '/api/state') return send(res, 200, state());
   if (pathname === '/api/config') return send(res, 200, CONFIG);
+  if (pathname === '/api/accounts') return send(res, 200, { active: activeAccount, names: ['a', 'b'] });
+  if (pathname === '/api/accounts/active' && req.method === 'POST') {
+    const { name } = await readJson(req);
+    if (name === 'a' || name === 'b') activeAccount = name;
+    return send(res, 200, { active: activeAccount });
+  }
+  const reopen = pathname.match(/^\/api\/sessions\/([^/]+)\/reopen$/);
+  if (reopen && req.method === 'POST') {
+    const s = SESSIONS.find(x => x.name === decodeURIComponent(reopen[1]));
+    if (s) s.account = activeAccount;
+    return send(res, 200, { name: s?.name, account: activeAccount, path: 'continue', tokens: 42000, sent: false });
+  }
   if (pathname.startsWith('/api/')) return send(res, 200, { ok: true, demo: true });
 
   const full = resolve(join(PUBLIC_DIR, pathname === '/' ? '/index.html' : pathname));
@@ -187,3 +208,8 @@ function send(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 function notFound(res) { res.writeHead(404); res.end('not found'); }
+async function readJson(req) {
+  let data = '';
+  for await (const chunk of req) data += chunk;
+  try { return JSON.parse(data || '{}'); } catch { return {}; }
+}

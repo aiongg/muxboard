@@ -174,6 +174,19 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .badge.state-word { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
 .badge.queued { color: var(--amber); border-color: var(--amber-soft); }
 .badge.stale { color: var(--amber); border-color: var(--amber-soft); text-transform: none; }
+.badge.acct { color: var(--muted); text-transform: none; letter-spacing: .04em; }
+/* Not the account new sessions use: its next start would be cold elsewhere. */
+.badge.acct.other { color: var(--on-amber); background: var(--amber); border-color: var(--amber); }
+
+.account-line {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--muted); margin: 0 2px 12px;
+}
+.account-line b { color: var(--amber); font-weight: 700; }
+.linkbtn {
+  font: inherit; color: var(--amber); background: none; border: none; padding: 4px 2px;
+  text-decoration: underline; text-underline-offset: 3px; cursor: pointer;
+}
 
 /* ----------------------------------------------------------------- detail */
 
@@ -281,6 +294,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .restore-row .r-name { flex: 1; min-width: 0; font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .restore-row .r-path { font-size: 11px; color: var(--muted); display: block; font-weight: 400; }
 .btn.small { min-height: 42px; padding: 0 16px; }
+.btn.mini { min-height: 28px; padding: 0 10px; border-radius: 7px; font-size: 10px; text-transform: none; letter-spacing: .04em; }
 .restore-actions { display: flex; gap: 8px; margin-top: 10px; }
 .restore-actions .btn { flex: 1; }
 
@@ -392,6 +406,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   transition: background .12s ease, color .12s ease;
 }
 .seg.on { background: var(--amber); color: var(--on-amber); font-weight: 700; }
+/* With the accounts tab there are five sections; tighter type keeps them on one phone-width row. */
+.segments:has(.seg[data-tab="accounts"]:not([hidden])) .seg { font-size: 11px; letter-spacing: .02em; min-width: 0; }
 .seg:not(.on):active { color: var(--cream); }
 
 .panel { display: flex; flex-direction: column; }
@@ -404,6 +420,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   font-size: 14px;
 }
 .setrow-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setrow-on { font-size: 11px; color: var(--ok); padding: 0 16px; }
 .setrow-sub {
   font-size: 11px; color: var(--muted); max-width: 45%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

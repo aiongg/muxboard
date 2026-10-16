@@ -156,11 +156,15 @@ const DEFAULT_WARM_HANDOFF = { enabled: true, idleMinutes: 50, minTokens: 200000
 const HANDOFF_MAX_IDLE_MIN = 55;
 const HANDOFF_TOO_LATE_MIN = 58;
 
+// list and use are argv arrays run without a shell; null hides the picker.
+const DEFAULT_ACCOUNTS = { freshAbove: 100000, list: null, use: null };
+
 const defaultConfig = () => ({
   roots: [shortPath(REPOS_ROOT)],
   shortcuts: DEFAULT_SHORTCUTS.map(s => ({ ...s })),
   rolloverCommand: DEFAULT_ROLLOVER_COMMAND,
   warmHandoff: { ...DEFAULT_WARM_HANDOFF },
+  accounts: { ...DEFAULT_ACCOUNTS },
 });
 
 // Named keys a chip or the keypad may press, mapped to tmux key names.
@@ -192,6 +196,7 @@ function normalizeConfig(raw) {
   return {
     roots: roots.length ? roots : def.roots, shortcuts, rolloverCommand,
     warmHandoff: cleanWarmHandoff(raw?.warmHandoff),
+    accounts: cleanAccounts(raw?.accounts),
   };
 }
 
@@ -207,6 +212,22 @@ function cleanWarmHandoff(raw) {
     idleMinutes: int(raw?.idleMinutes, 1, HANDOFF_MAX_IDLE_MIN, d.idleMinutes),
     minTokens: int(raw?.minTokens, 0, 10_000_000, d.minTokens),
     command: command || d.command,
+  };
+}
+
+// The account commands are argv arrays: no shell ever parses them, and an
+// account name only ever replaces "{name}" inside one element. A use command
+// without "{name}" could not say which account to switch to.
+function cleanAccounts(raw) {
+  const d = DEFAULT_ACCOUNTS;
+  const argv = v => Array.isArray(v) && v.length >= 1 && v.length <= 16 &&
+    v.every(a => typeof a === 'string' && a.length <= 200) && v[0].trim() ? [...v] : null;
+  const use = argv(raw?.use);
+  return {
+    freshAbove: Number.isInteger(raw?.freshAbove) && raw.freshAbove >= 0 && raw.freshAbove <= 10_000_000
+      ? raw.freshAbove : d.freshAbove,
+    list: argv(raw?.list),
+    use: use && use.some(a => a.includes('{name}')) ? use : null,
   };
 }
 
@@ -259,6 +280,8 @@ async function listSessions() {
     const claude = findClaudeProcess(Number(panePid));
     if (!claude && cmd !== 'claude') continue;
     seen.add(name);
+    const pid = claude ? claude.pid : Number(panePid);
+    const configDir = processConfigDir(pid);
     sessions.push({
       name,
       cwd,
@@ -266,10 +289,14 @@ async function listSessions() {
       createdAt: Number(created) * 1000,
       attached: Number(attached) > 0,
       remoteControl: claude ? claude.remoteControl : false,
-      pid: claude ? claude.pid : Number(panePid),
-      version: claudeExeVersion(claude ? claude.pid : Number(panePid)),
+      pid,
+      version: claudeExeVersion(pid),
+      configDir, // server-side only: /api/state sends the account label
+      account: accountLabel(configDir),
     });
   }
+  const pids = new Set(sessions.map(s => s.pid));
+  for (const pid of configDirCache.keys()) if (!pids.has(pid)) configDirCache.delete(pid);
   sessions.sort((a, b) => b.createdAt - a.createdAt);
   return { tmuxRunning: true, sessions };
 }
@@ -332,6 +359,112 @@ function compareVersions(a, b) {
     if (d) return d;
   }
   return 0;
+}
+
+// ----------------------------------------------------------------- accounts
+// Claude Code keeps an account's credentials, session registry and transcripts
+// under CLAUDE_CONFIG_DIR, or ~/.claude when it is unset. A process's account
+// is fixed at exec, so it is read once per pid from /proc/<pid>/environ.
+
+const DEFAULT_CLAUDE_HOME = join(HOME, '.claude');
+const ACCOUNT_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/;
+const ACTIVE_TTL_MS = 10_000;
+
+// pid → CLAUDE_CONFIG_DIR ('' when unset), or null when /proc can't say.
+const configDirCache = new Map();
+
+// Only CLAUDE_CONFIG_DIR is kept; every other variable is discarded on the spot.
+function processConfigDir(pid) {
+  if (configDirCache.has(pid)) return configDirCache.get(pid);
+  let dir = null;
+  try {
+    dir = '';
+    for (const entry of readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0')) {
+      if (entry.startsWith('CLAUDE_CONFIG_DIR=')) { dir = entry.slice('CLAUDE_CONFIG_DIR='.length); break; }
+    }
+  } catch {
+    dir = null;
+  }
+  configDirCache.set(pid, dir);
+  return dir;
+}
+
+const claudeHome = dir => dir ? resolve(dir.replace(/^~(?=\/|$)/, HOME)) : DEFAULT_CLAUDE_HOME;
+const sessionHome = s => claudeHome(s.configDir);
+
+// ~/.claude-b → "b"; unset or ~/.claude → "default"; unknown → null.
+function accountLabel(dir) {
+  if (dir == null) return null;
+  const home = claudeHome(dir);
+  if (home === DEFAULT_CLAUDE_HOME) return 'default';
+  return basename(home).replace(/^\./, '').replace(/^claude-/, '') || basename(home);
+}
+
+// A spawned child must not look like it runs inside Claude Code.
+function childEnv() {
+  const env = { ...process.env };
+  delete env.CLAUDECODE;
+  return env;
+}
+
+// The active account is whatever a new session would get: sessions start
+// through a zsh login shell, so ask one. Polls get the cached value and
+// refresh it in the background once it is older than ACTIVE_TTL_MS.
+async function readActiveAccount() {
+  try {
+    const { stdout } = await exec('/bin/zsh', ['-lc', 'print -r -- "${CLAUDE_CONFIG_DIR-}"'],
+      { timeout: 5000, env: childEnv() });
+    const dir = stdout.replace(/\n$/, '').split('\n').at(-1); // a profile may print first
+    return { dir, label: accountLabel(dir) };
+  } catch {
+    return null;
+  }
+}
+
+let activeCache = { at: 0, value: null };
+let activeRead = null;
+function refreshActive() {
+  const read = readActiveAccount().then(value => {
+    if (activeRead === read) { activeCache = { at: Date.now(), value }; activeRead = null; }
+    return value;
+  });
+  activeRead = read;
+  return read;
+}
+
+async function activeAccount(fresh = false) {
+  if (fresh) return refreshActive();
+  if (!activeCache.at) return activeRead || refreshActive();
+  if (Date.now() - activeCache.at > ACTIVE_TTL_MS && !activeRead) refreshActive();
+  return activeCache.value;
+}
+
+function toolError(err) {
+  return String(err.stderr || err.message || err).trim().split('\n')[0].slice(0, 200);
+}
+
+async function runAccountTool(argv, timeout) {
+  const [cmd, ...args] = argv;
+  const { stdout } = await exec(cmd.replace(/^~(?=\/)/, HOME), args, { timeout, env: childEnv() });
+  return stdout;
+}
+
+async function accountNames(cfg) {
+  if (!cfg.accounts.list) return [];
+  let out;
+  try { out = await runAccountTool(cfg.accounts.list, 10_000); }
+  catch (err) { throw httpError(500, `account list failed: ${toolError(err)}`); }
+  return [...new Set(out.split('\n').map(l => l.trim()).filter(n => ACCOUNT_NAME.test(n)))].slice(0, 32);
+}
+
+async function useAccount(cfg, name) {
+  if (!cfg.accounts.use) throw httpError(400, 'no account switch command configured');
+  if (!ACCOUNT_NAME.test(name)) throw httpError(400, 'invalid account name');
+  const argv = cfg.accounts.use.map(a => a.replaceAll('{name}', name));
+  try { await runAccountTool(argv, 15_000); }
+  catch (err) { throw httpError(500, `account switch failed: ${toolError(err)}`); }
+  const active = await activeAccount(true);
+  return { active: active?.label ?? null };
 }
 
 function shortPath(p) {
@@ -432,12 +565,17 @@ function expandDir(dir) {
   return real;
 }
 
-async function createSession({ dir, name, cont }) {
+// configDir pins the account (CLAUDE_CONFIG_DIR, '' for the default one);
+// left undefined, the session gets whatever the login shell sets.
+async function createSession({ dir, name, cont, resume, configDir }) {
   const target = expandDir(dir);
   const base = sanitizeName(name) || sanitizeName(basename(target)) || 'session';
   const finalName = await uniqueName(base);
   const rcName = `${HOSTNAME}:${finalName}`;
-  const cmd = `exec ${shq(CLAUDE_BIN)} ${cont ? '--continue ' : ''}--remote-control --name ${shq(rcName)}`;
+  const account = configDir === undefined ? ''
+    : configDir ? `export CLAUDE_CONFIG_DIR=${shq(configDir)}; ` : 'unset CLAUDE_CONFIG_DIR; ';
+  const resumeFlag = resume ? `--resume ${shq(resume)} ` : cont ? '--continue ' : '';
+  const cmd = `${account}exec ${shq(CLAUDE_BIN)} ${resumeFlag}--remote-control --name ${shq(rcName)}`;
   const res = await tmux('new-session', '-d', '-s', finalName, '-c', target, '/bin/zsh', '-lc', cmd);
   if (!res.ok) throw httpError(500, res.err);
   return { name: finalName, rcName };
@@ -479,9 +617,9 @@ async function sendKeys(name, { kind, key, text }) {
 // (like the TUI layout peek() reads), so validate before believing it: the
 // process start time proves the file describes this incarnation of the pid,
 // and the cwd must match the pane's.
-function sessionUuid(pid, cwd) {
+function sessionUuid(pid, cwd, home = DEFAULT_CLAUDE_HOME) {
   let reg;
-  try { reg = JSON.parse(readFileSync(join(HOME, '.claude/sessions', `${pid}.json`), 'utf8')); }
+  try { reg = JSON.parse(readFileSync(join(home, 'sessions', `${pid}.json`), 'utf8')); }
   catch { return null; }
   if (!/^[0-9a-f][0-9a-f-]{34}[0-9a-f]$/.test(reg?.sessionId || '')) return null;
   if (reg.cwd && cwd && reg.cwd !== cwd) return null;
@@ -509,13 +647,87 @@ async function rollover(name) {
   if (!s) throw httpError(404, 'no such session');
   const { status } = await peek(name);
   if (status !== 'idle') throw httpError(409, `session is ${status} — roll over when it is idle`);
-  const uuid = sessionUuid(s.pid, s.cwd);
+  const uuid = sessionUuid(s.pid, s.cwd, sessionHome(s));
   if (!uuid) throw httpError(500, 'could not identify the session transcript');
   const cfg = await loadConfig();
   await sendKeys(name, { kind: 'command', text: '/clear' });
   await sleep(1500); // let the TUI settle on the fresh prompt
   await sendKeys(name, { kind: 'command', text: `${cfg.rolloverCommand} ${uuid}` });
   return { uuid };
+}
+
+// --------------------------------------------------------- account reopen
+
+// The prompt cache is per account, so a session reopened in another account
+// starts cold either way. A small context is cheap to re-read and resumes as
+// is; a big one starts fresh and restores from the transcript, as rollover
+// does. Waiting on the restore send keeps the request open for up to
+// REOPEN_READY_MS.
+const REOPEN_READY_MS = 30_000;
+const reopening = new Set();
+
+// The TUI is ready for input once its input box renders empty on an idle
+// screen. Gives up when the session dies (e.g. a resume that found nothing).
+async function waitForPrompt(name, ms) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    await sleep(500);
+    const { status } = await peek(name);
+    if (status === 'gone') return false;
+    if (status === 'idle' && await promptDraft(name) === '') return true;
+  }
+  return false;
+}
+
+async function reopen(name) {
+  if (reopening.has(name)) throw httpError(409, 'already reopening');
+  const { sessions } = await listSessions();
+  const s = sessions.find(x => x.name === name);
+  if (!s) throw httpError(404, 'no such session');
+  const { status } = await peek(name);
+  if (status !== 'idle') throw httpError(409, `session is ${status} — reopen it when it is idle`);
+  const active = await activeAccount(true);
+  if (!active) throw httpError(500, 'could not determine the active account');
+  const cfg = await loadConfig();
+
+  // Everything that decides the path is read before the old session dies.
+  const oldHome = sessionHome(s), newHome = claudeHome(active.dir);
+  const uuid = sessionUuid(s.pid, s.cwd, oldHome);
+  const info = uuid && await transcriptTail(join(projectDir(s.cwd, oldHome), `${uuid}.jsonl`));
+  const tokens = info?.lastAssistant?.tokens ?? 0;
+  // --resume only finds transcripts under the new account's own projects
+  // folder, so it is used only when that account can see this one.
+  const visible = !!uuid && existsSync(join(projectDir(s.cwd, newHome), `${uuid}.jsonl`));
+  let path;
+  if (!uuid) {
+    if (!hasConversation(s.cwd, newHome)) throw httpError(500, 'could not identify the session transcript');
+    path = 'continue';
+  } else if (!info) {
+    path = 'new'; // registered, but no turn was ever recorded
+  } else {
+    path = tokens <= cfg.accounts.freshAbove && visible ? 'continue' : 'transcript';
+  }
+
+  reopening.add(name);
+  pendingRestart.delete(name);
+  try {
+    await killSession(name);
+    const made = await createSession({
+      dir: s.cwd, name, configDir: active.dir,
+      cont: path === 'continue' && !uuid,
+      resume: path === 'continue' && uuid ? uuid : undefined,
+    });
+    const out = { name: made.name, account: active.label, path, tokens, sent: false };
+    if (path === 'transcript') {
+      if (!await waitForPrompt(made.name, REOPEN_READY_MS)) return out;
+      await sleep(1000); // let commands and skills finish loading
+      await sendKeys(made.name, { kind: 'command', text: `${cfg.rolloverCommand} ${uuid}` });
+      out.sent = true;
+    }
+    return out;
+  } finally {
+    reopening.delete(name);
+  }
 }
 
 // ------------------------------------------------------------ warm handoff
@@ -534,7 +746,7 @@ const ANSI = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
 // Claude Code names a project's transcript folder after its cwd, with every
 // character other than a letter or digit turned into "-".
-const projectDir = cwd => join(HOME, '.claude/projects', cwd.replace(/[^A-Za-z0-9]/g, '-'));
+const projectDir = (cwd, home = DEFAULT_CLAUDE_HOME) => join(home, 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'));
 
 // Persisted so a restart neither forgets a toggle nor re-sends a handoff:
 // toggles are per tmux session name (overrides of warmHandoff.enabled), sent
@@ -680,8 +892,8 @@ async function handoffTick() {
 // Returns true when it changed the persisted state.
 async function considerHandoff(s, cfg, st) {
   const wh = cfg.warmHandoff;
-  const uuid = sessionUuid(s.pid, s.cwd);
-  const info = uuid && await transcriptTail(join(projectDir(s.cwd), `${uuid}.jsonl`));
+  const uuid = sessionUuid(s.pid, s.cwd, sessionHome(s));
+  const info = uuid && await transcriptTail(join(projectDir(s.cwd, sessionHome(s)), `${uuid}.jsonl`));
   if (!info) { handoffSentAt.delete(s.name); return false; }
 
   // Once per idle period. The handoff turn writes assistant records of its
@@ -762,8 +974,9 @@ async function runUpdate() {
 }
 
 // Rolling restart: queued sessions are recycled — killed and relaunched with
-// --continue, resuming the same conversation on the new binary — one sweep at
-// a time, each as soon as it is seen idle. Busy or attention sessions wait.
+// --continue in the same account, resuming the same conversation on the new
+// binary — one sweep at a time, each as soon as it is seen idle. Busy or
+// attention sessions wait.
 const pendingRestart = new Set();
 const restarting = new Set();
 let restartTimer = null, sweepBusy = false;
@@ -790,9 +1003,9 @@ function ensureRestartLoop() {
 
 // A session with no saved conversation cannot be recycled: --continue with
 // nothing to continue exits immediately and the tmux session dies with it.
-function hasConversation(cwd) {
+function hasConversation(cwd, home = DEFAULT_CLAUDE_HOME) {
   try {
-    return readdirSync(projectDir(cwd)).some(f => f.endsWith('.jsonl'));
+    return readdirSync(projectDir(cwd, home)).some(f => f.endsWith('.jsonl'));
   } catch {
     return false;
   }
@@ -803,13 +1016,15 @@ function processRestarts(peeked) {
   for (const name of pendingRestart) {
     const s = live.get(name);
     if (!s) { pendingRestart.delete(name); continue; }
-    if (!hasConversation(s.cwd)) { pendingRestart.delete(name); continue; }
-    if (restarting.has(name) || s.peek.status !== 'idle') continue;
+    if (!hasConversation(s.cwd, sessionHome(s))) { pendingRestart.delete(name); continue; }
+    if (restarting.has(name) || reopening.has(name) || s.peek.status !== 'idle') continue;
     restarting.add(name);
     (async () => {
       try {
         await killSession(name);
-        await createSession({ dir: s.cwd, name, cont: true });
+        // Same account as before: --continue elsewhere would find another
+        // account's conversations, or none.
+        await createSession({ dir: s.cwd, name, cont: true, configDir: s.configDir ?? undefined });
       } catch { /* session vanished mid-recycle; nothing to roll back */ }
       finally {
         pendingRestart.delete(name);
@@ -838,7 +1053,7 @@ async function saveSnapshot(sessions) {
   const snap = {
     bootId: bootId(),
     updatedAt: Date.now(),
-    sessions: sessions.map(s => ({ name: s.name, cwd: s.cwd })),
+    sessions: sessions.map(s => ({ name: s.name, cwd: s.cwd, configDir: s.configDir })),
   };
   const prev = await loadSnapshot();
   if (JSON.stringify(prev.sessions) === JSON.stringify(snap.sessions) && prev.bootId === snap.bootId) return;
@@ -854,7 +1069,7 @@ async function restoreOffer(tmuxRunning, live) {
   const liveNames = new Set(live.map(s => s.name));
   const missing = snap.sessions.filter(s => !liveNames.has(s.name) && existsSync(s.cwd));
   if (!missing.length) return null;
-  return { savedAt: snap.updatedAt, sessions: missing.map(s => ({ ...s, repo: shortPath(s.cwd) })) };
+  return { savedAt: snap.updatedAt, sessions: missing.map(s => ({ name: s.name, cwd: s.cwd, repo: shortPath(s.cwd) })) };
 }
 
 // ----------------------------------------------------------------- folders
@@ -1030,11 +1245,12 @@ const server = createServer(async (req, res) => {
       const peeked = await Promise.all(sessions.map(async s => ({ ...s, peek: await peek(s.name, 0, 300) })));
       if (tmuxRunning) await saveSnapshot(sessions);
       const handoff = await loadHandoffState();
+      const active = await activeAccount();
       return json(res, 200, {
         host: HOSTNAME,
         now: Date.now(),
         tmuxRunning,
-        sessions: peeked.map(s => ({
+        sessions: peeked.map(({ configDir, ...s }) => ({
           ...s,
           status: s.peek.status,
           peek: s.peek.lines,
@@ -1045,6 +1261,7 @@ const server = createServer(async (req, res) => {
         restore: await restoreOffer(tmuxRunning, sessions),
         config: cfg,
         auth: { enabled: !!auth },
+        accounts: { active: active?.label ?? null, switchable: !!(cfg.accounts.list && cfg.accounts.use) },
         claude: {
           version: current,
           updating: update.running,
@@ -1057,6 +1274,17 @@ const server = createServer(async (req, res) => {
     if (path === '/api/config') {
       if (req.method === 'GET') return json(res, 200, await loadConfig());
       if (req.method === 'PUT') return json(res, 200, await saveConfig(await readBody(req)));
+    }
+
+    if (req.method === 'GET' && path === '/api/accounts') {
+      const cfg = await loadConfig();
+      const active = await activeAccount(true);
+      return json(res, 200, { active: active?.label ?? null, names: await accountNames(cfg) });
+    }
+
+    if (req.method === 'POST' && path === '/api/accounts/active') {
+      const body = await readBody(req);
+      return json(res, 200, await useAccount(await loadConfig(), String(body.name ?? '')));
     }
 
     if (req.method === 'POST' && path === '/api/update') {
@@ -1092,6 +1320,9 @@ const server = createServer(async (req, res) => {
       if (req.method === 'POST' && sub === '/rollover') {
         return json(res, 200, await rollover(name));
       }
+      if (req.method === 'POST' && sub === '/reopen') {
+        return json(res, 200, await reopen(name));
+      }
       if (req.method === 'POST' && sub === '/handoff') {
         const body = await readBody(req);
         return json(res, 200, await setHandoffToggle(name, body.enabled));
@@ -1107,7 +1338,9 @@ const server = createServer(async (req, res) => {
       const snap = await loadSnapshot();
       const wanted = snap.sessions.filter(s => body.names?.includes(s.name));
       const made = [];
-      for (const s of wanted) made.push(await createSession({ dir: s.cwd, name: s.name, cont: true }));
+      for (const s of wanted) {
+        made.push(await createSession({ dir: s.cwd, name: s.name, cont: true, configDir: s.configDir ?? undefined }));
+      }
       return json(res, 200, { restored: made });
     }
 

@@ -49,6 +49,7 @@
       <div class="pane-scroll" id="listScroll">
         <section id="updateBanner" class="restore" hidden></section>
         <section id="restoreBanner" class="restore" hidden></section>
+        <p id="accountLine" class="account-line" hidden></p>
         <nav id="rows" class="rows" aria-label="Sessions"></nav>
         <section id="empty" class="empty" hidden>
           <p class="empty-glyph">❯ _</p>
@@ -82,6 +83,8 @@
         </header>
         <div class="meta detail-meta">
           <span class="meta-items" id="dMeta"></span>
+          <button class="btn mini" id="reopenBtn" hidden
+                  title="Restart this session in the account new sessions use"></button>
           <span class="badge sent" id="dHandoffSent" hidden></span>
           <label class="toggle mini" title="Send the handoff command once while a big idle session's cache is still warm">
             <input type="checkbox" id="dHandoff">
@@ -146,6 +149,7 @@
       <button class="seg on" data-tab="folders" role="tab" aria-selected="true">folders</button>
       <button class="seg" data-tab="shortcuts" role="tab" aria-selected="false">shortcuts</button>
       <button class="seg" data-tab="handoff" role="tab" aria-selected="false">handoff</button>
+      <button class="seg" data-tab="accounts" role="tab" aria-selected="false" hidden>accounts</button>
       <button class="seg" data-tab="security" role="tab" aria-selected="false">security</button>
     </div>
 
@@ -188,6 +192,12 @@
       <p class="set-hint">A session idle this long, with at least this much context, gets the command
         typed in once — while its one-hour prompt cache is still warm. Each session's detail view
         has its own switch.</p>
+    </div>
+
+    <div class="panel" data-panel="accounts" role="tabpanel" hidden>
+      <div id="accountList" class="setlist"></div>
+      <p class="set-hint">The account new sessions start in. Running sessions stay where they
+        are; each one's detail view can reopen it in this account.</p>
     </div>
 
     <div class="panel" data-panel="security" role="tabpanel" hidden>

@@ -53,6 +53,19 @@ box between the last two `─` rules from an escaped capture, ignoring dim
 suggestion text. If either format shifts, the feature goes quiet rather than
 misfiring: a missing record or an unfound input box means no send.
 
+Accounts: Claude Code keeps credentials, `sessions/` and `projects/` under
+`CLAUDE_CONFIG_DIR` (default `~/.claude`). `processConfigDir()` reads that one
+variable from `/proc/<pid>/environ` (everything else is discarded) and caches
+it per pid; `sessionUuid()`, `projectDir()` and `hasConversation()` take the
+session's own account home, so rollover, warm handoff and the rolling restart
+work in any account. The rolling restart and reboot restore pin the session's
+old account; a new session gets whatever the zsh login shell sets, which
+`activeAccount()` reads the same way (`zsh -lc`, cached 10 s). `reopen()`
+kills an idle session and recreates it under the same name in the active
+account, with `--resume <uuid>` for a small context the new account can see,
+and otherwise fresh plus the restore command once `waitForPrompt()` sees an
+empty input box.
+
 User-tailored settings (repo roots, send-key shortcuts) belong in
 `~/.config/muxboard/config.json`, never hardcoded — the app has a settings
 sheet for editing them. That file is sent to the client on every poll, so

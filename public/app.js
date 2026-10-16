@@ -13,7 +13,7 @@ let failures = 0;
 let pollTimer = null;
 let sendTargetName = null;
 let selected = null;          // name of the session shown in the detail pane
-const armed = new Map();      // "stop:name" / "fresh:name" -> disarm timer for two-tap confirm
+const armed = new Map();      // "stop:name" / "fresh:name" / "reopen:name" -> disarm timer for two-tap confirm
 
 // Two panes side by side on a wide screen; one at a time on a phone.
 const wide = matchMedia('(min-width: 880px)');
@@ -31,9 +31,9 @@ function age(ms) {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
-async function api(path, opts = {}) {
+async function api(path, { timeout = 6000, ...opts } = {}) {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 6000);
+  const t = setTimeout(() => ctrl.abort(), timeout);
   try {
     const res = await fetch(path, {
       signal: ctrl.signal,
@@ -207,6 +207,7 @@ $('#logoutBtn').addEventListener('click', async () => {
 function render() {
   renderUpdate();
   renderRestore();
+  renderAccountLine();
   renderRows();
   renderDetail();
   renderFolders();
@@ -336,11 +337,48 @@ function updateRow(row, s) {
 }
 
 function badges(s) {
-  return `${s.remoteControl ? '<span class="badge app">app</span>' : ''}
+  return `${accountBadge(s)}${s.remoteControl ? '<span class="badge app">app</span>' : ''}
       ${s.attached ? '<span class="badge tty">tty</span>' : ''}
       ${s.status === 'attention' ? '<span class="badge state-word">needs you</span>' : ''}
       ${state.claude?.pending?.includes(s.name) ? '<span class="badge queued">restart queued</span>'
         : s.stale ? `<span class="badge stale">${esc(s.version || 'old')}</span>` : ''}`;
+}
+
+// --------------------------------------------------------------- accounts
+// Which Claude account each session runs in, and which one a new session
+// would get. All of it stays out of sight for a setup with a single account.
+
+function accountsShown() {
+  const a = state?.accounts || {};
+  return !!(a.switchable || (a.active && a.active !== 'default') ||
+    state.sessions.some(s => s.account && s.account !== 'default'));
+}
+
+// True when the session runs in an account other than the one new sessions use.
+function otherAccount(s) {
+  const active = state?.accounts?.active;
+  return !!(active && s.account && s.account !== active);
+}
+
+function accountBadge(s) {
+  if (!s.account || !accountsShown()) return '';
+  const other = otherAccount(s);
+  const title = other ? `account ${s.account} — new sessions start in ${state.accounts.active}` : `account ${s.account}`;
+  return `<span class="badge acct${other ? ' other' : ''}" title="${esc(title)}">${esc(s.account)}</span>`;
+}
+
+let accountLineHTML = '';
+function renderAccountLine() {
+  const el = $('#accountLine');
+  const active = state.accounts?.active;
+  const show = accountsShown() && !!active;
+  el.hidden = !show;
+  const html = show ? `<span>new sessions: <b>${esc(active)}</b></span>` +
+    (state.accounts.switchable ? '<button class="linkbtn" id="accountChange">change</button>' : '') : '';
+  if (html === accountLineHTML) return;
+  accountLineHTML = html;
+  el.innerHTML = html;
+  $('#accountChange')?.addEventListener('click', () => { closeSheets(); openSettings('accounts'); });
 }
 
 // ----------------------------------------------------------------- detail
@@ -375,6 +413,7 @@ function renderDetail() {
   $('#dName').textContent = s.name;
   $('#dAge').textContent = age(s.createdAt);
   $('#dMeta').innerHTML = `<span>${esc(s.repo)}</span>${badges(s)}`;
+  $('#reopenBtn').hidden = !(accountsShown() && otherAccount(s));
   renderHandoff(s);
 
   // The screen sticks to the bottom like a terminal: follow new output unless
@@ -496,9 +535,10 @@ function twoTap(act, btn, run) {
 }
 
 function syncActionButtons() {
-  for (const [act, btn] of [['fresh', $('#freshBtn')], ['stop', $('#stopBtn')]]) {
+  const labels = { fresh: 'fresh', stop: 'stop', reopen: `reopen in ${state?.accounts?.active || '?'}` };
+  for (const [act, btn] of [['fresh', $('#freshBtn')], ['stop', $('#stopBtn')], ['reopen', $('#reopenBtn')]]) {
     const on = armed.has(`${act}:${selected}`);
-    btn.textContent = on ? 'sure?' : act;
+    btn.textContent = on ? 'sure?' : labels[act];
     btn.classList.toggle('armed', on);
   }
 }
@@ -508,6 +548,23 @@ function syncActionButtons() {
 $('#freshBtn').addEventListener('click', e => twoTap('fresh', e.currentTarget, name => {
   api(`/api/sessions/${encodeURIComponent(name)}/rollover`, { method: 'POST' })
     .then(() => { toast(`${name}: fresh chat — restoring from the transcript`); setTimeout(poll, 800); })
+    .catch(e => toast(e.message, true));
+}));
+
+// Restart the session in the active account. The server resumes a small
+// context as is and starts a big one fresh from its transcript, and may wait
+// for the new TUI before it answers.
+$('#reopenBtn').addEventListener('click', e => twoTap('reopen', e.currentTarget, name => {
+  toast(`${name}: reopening…`);
+  api(`/api/sessions/${encodeURIComponent(name)}/reopen`, { method: 'POST', timeout: 45000 })
+    .then(r => {
+      const where = `${name}: reopened in ${r.account}`;
+      if (r.path === 'continue') toast(`${where}, continued`);
+      else if (r.path === 'new') toast(`${where}, new conversation`);
+      else if (r.sent) toast(`${where} from transcript`);
+      else toast(`${where}, but it never became ready — ${conf().rolloverCommand || 'restore'} not sent`, true);
+      setTimeout(poll, 800);
+    })
     .catch(e => toast(e.message, true));
 }));
 
@@ -736,6 +793,40 @@ $('#whForm').addEventListener('submit', async e => {
   }
 });
 
+// The picker lists what the configured list command prints, fetched each time
+// the tab opens.
+async function renderAccountSettings() {
+  const list = $('#accountList');
+  list.innerHTML = '<p class="set-hint">loading…</p>';
+  let data;
+  try {
+    data = await api('/api/accounts', { timeout: 15000 });
+  } catch (e) {
+    list.innerHTML = `<p class="set-hint">${esc(e.message)}</p>`;
+    return;
+  }
+  list.innerHTML = data.names.map(n => `
+    <div class="setrow">
+      <span class="setrow-main">${esc(n)}</span>
+      ${n === data.active ? '<span class="setrow-on">active</span>'
+        : `<button class="btn small" data-account="${esc(n)}">use</button>`}
+    </div>`).join('') || '<p class="set-hint">The list command printed no accounts.</p>';
+  for (const b of list.querySelectorAll('[data-account]')) {
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      try {
+        const r = await api('/api/accounts/active', { method: 'POST', body: { name: b.dataset.account }, timeout: 20000 });
+        toast(`new sessions: ${r.active ?? '?'}`);
+        poll();
+        renderAccountSettings();
+      } catch (e) {
+        b.disabled = false;
+        toast(e.message, true);
+      }
+    });
+  }
+}
+
 function showSettingsTab(name) {
   for (const seg of $('#segments').querySelectorAll('.seg')) {
     const on = seg.dataset.tab === name;
@@ -749,7 +840,9 @@ function showSettingsTab(name) {
 
 $('#segments').addEventListener('click', e => {
   const seg = e.target.closest('.seg');
-  if (seg) showSettingsTab(seg.dataset.tab);
+  if (!seg) return;
+  showSettingsTab(seg.dataset.tab);
+  if (seg.dataset.tab === 'accounts') renderAccountSettings();
 });
 
 // A few layout facts, for diagnosing a phone that hides part of the UI: the
@@ -764,13 +857,17 @@ function renderDiagnostics() {
     + ` · safe-bottom ${inset} · send ${Math.round(send.top)}–${Math.round(send.bottom)}`;
 }
 
-function openSettings() {
+function openSettings(tab = 'folders') {
   renderSettings();
   renderHandoffSettings();
   renderAuth();
   clearPasswordFields();
   renderDiagnostics();
-  showSettingsTab('folders');
+  const switchable = !!state?.accounts?.switchable;
+  $('#segments [data-tab="accounts"]').hidden = !switchable;
+  if (tab === 'accounts' && !switchable) tab = 'folders';
+  showSettingsTab(tab);
+  if (tab === 'accounts') renderAccountSettings();
   openSheet(settingsSheet);
 }
 
