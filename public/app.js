@@ -350,9 +350,12 @@ function badges(s) {
 
 function accountsShown() {
   const a = state?.accounts || {};
-  return !!(a.switchable || (a.active && a.active !== 'default') ||
+  return !!(a.available || (a.active && a.active !== 'default') ||
     state.sessions.some(s => s.account && s.account !== 'default'));
 }
+
+// Accounts show their label from the config, else their name.
+const acctLabel = name => conf().accounts?.labels?.[name] || name;
 
 // True when the session runs in an account other than the one new sessions use.
 function otherAccount(s) {
@@ -364,7 +367,7 @@ function accountBadge(s) {
   if (!s.account || !accountsShown()) return '';
   const other = otherAccount(s);
   const title = other ? `account ${s.account} — new sessions start in ${state.accounts.active}` : `account ${s.account}`;
-  return `<span class="badge acct${other ? ' other' : ''}" title="${esc(title)}">${esc(s.account)}</span>`;
+  return `<span class="badge acct${other ? ' other' : ''}" title="${esc(title)}">${esc(acctLabel(s.account))}</span>`;
 }
 
 let accountLineHTML = '';
@@ -373,8 +376,8 @@ function renderAccountLine() {
   const active = state.accounts?.active;
   const show = accountsShown() && !!active;
   el.hidden = !show;
-  const html = show ? `<span>new sessions: <b>${esc(active)}</b></span>` +
-    (state.accounts.switchable ? '<button class="linkbtn" id="accountChange">change</button>' : '') : '';
+  const html = show ? `<span>new sessions: <b>${esc(acctLabel(active))}</b></span>` +
+    (state.accounts.available ? '<button class="linkbtn" id="accountChange">change</button>' : '') : '';
   if (html === accountLineHTML) return;
   accountLineHTML = html;
   el.innerHTML = html;
@@ -535,7 +538,7 @@ function twoTap(act, btn, run) {
 }
 
 function syncActionButtons() {
-  const labels = { fresh: 'fresh', stop: 'stop', reopen: `reopen in ${state?.accounts?.active || '?'}` };
+  const labels = { fresh: 'fresh', stop: 'stop', reopen: `reopen in ${state?.accounts?.active ? acctLabel(state.accounts.active) : '?'}` };
   for (const [act, btn] of [['fresh', $('#freshBtn')], ['stop', $('#stopBtn')], ['reopen', $('#reopenBtn')]]) {
     const on = armed.has(`${act}:${selected}`);
     btn.textContent = on ? 'sure?' : labels[act];
@@ -569,7 +572,7 @@ function reopenSession(name) {
   toast(`${name}: reopening…`);
   api(`/api/sessions/${encodeURIComponent(name)}/reopen`, { method: 'POST', body: { account: reopenTarget }, timeout: 60000 })
     .then(r => {
-      const where = `${name}: reopened in ${r.account}`;
+      const where = `${name}: reopened in ${acctLabel(r.account)}`;
       if (r.path === 'continue') toast(`${where}, continued`);
       else if (r.path === 'new') toast(`${where}, new conversation`);
       else if (r.sent) toast(`${where} from transcript`);
@@ -804,30 +807,56 @@ $('#whForm').addEventListener('submit', async e => {
   }
 });
 
-// The picker lists what the configured list command prints, fetched each time
-// the tab opens.
+// The accounts tab: one row per name the list command prints, with its
+// sign-in state, fetched each time the tab opens.
+const ACCOUNT_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/;
+const LOGIN_CODE = /^[A-Za-z0-9#_.~+\/=-]{1,512}$/;
+let accountsData = null;
+
 async function renderAccountSettings() {
   const list = $('#accountList');
-  list.innerHTML = '<p class="set-hint">loading…</p>';
+  if (!accountsData) list.innerHTML = '<p class="set-hint">loading…</p>';
   let data;
   try {
-    data = await api('/api/accounts', { timeout: 15000 });
+    data = await api('/api/accounts', { timeout: 20000 });
   } catch (e) {
-    list.innerHTML = `<p class="set-hint">${esc(e.message)}</p>`;
+    accountsData = null;
+    $('#accountAddForm').hidden = true;
+    list.innerHTML = `<p class="set-hint">${e.status === 503 ? 'Accounts are unavailable.' : esc(e.message)}</p>`;
     return;
   }
-  list.innerHTML = data.names.map(n => `
-    <div class="setrow">
-      <span class="setrow-main">${esc(n)}</span>
-      ${n === data.active ? '<span class="setrow-on">active</span>'
-        : `<button class="btn small" data-account="${esc(n)}">use</button>`}
-    </div>`).join('') || '<p class="set-hint">The list command printed no accounts.</p>';
+  accountsData = data;
+  $('#accountAddForm').hidden = !data.canAdd;
+  list.innerHTML = data.accounts.map(a => {
+    const mark = a.loggedIn == null ? '' : a.loggedIn
+      ? '<span class="acct-state in">logged in</span>' : '<span class="acct-state out">not logged in</span>';
+    const meta = [a.name, a.email, a.plan].filter(Boolean).map(esc).join(' · ');
+    return `
+    <div class="acctrow">
+      <div class="acct-head">
+        <input class="acct-label" data-label="${esc(a.name)}" value="${esc(a.label ?? '')}" placeholder="${esc(a.name)}"
+               maxlength="32" autocomplete="off" spellcheck="false" enterkeyhint="done" aria-label="Label for ${esc(a.name)}">
+        ${mark}
+      </div>
+      <div class="acct-meta">${meta}</div>
+      <div class="acct-actions">
+        ${a.active ? '<span class="setrow-on">new sessions</span>'
+          : data.canUse ? `<button class="btn small" data-account="${esc(a.name)}">use</button>` : ''}
+        ${a.canLogin ? `<button class="btn small" data-login="${esc(a.name)}">log in</button>` : ''}
+      </div>
+    </div>`;
+  }).join('') || '<p class="set-hint">The list command printed no accounts.</p>';
+
+  for (const input of list.querySelectorAll('[data-label]')) {
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
+    input.addEventListener('change', () => saveLabel(input.dataset.label, input.value));
+  }
   for (const b of list.querySelectorAll('[data-account]')) {
     b.addEventListener('click', async () => {
       b.disabled = true;
       try {
         const r = await api('/api/accounts/active', { method: 'POST', body: { name: b.dataset.account }, timeout: 30000 });
-        toast(`new sessions: ${r.active ?? '?'}`);
+        toast(`new sessions: ${r.active ? acctLabel(r.active) : '?'}`);
         poll();
         renderAccountSettings();
       } catch (e) {
@@ -836,7 +865,109 @@ async function renderAccountSettings() {
       }
     });
   }
+  for (const b of list.querySelectorAll('[data-login]')) {
+    b.addEventListener('click', () => startLogin(b.dataset.login, b));
+  }
 }
+
+async function saveLabel(name, value) {
+  const accounts = conf().accounts || {};
+  const labels = { ...accounts.labels, [name]: value.trim() };
+  if (await saveConfig({ ...conf(), accounts: { ...accounts, labels } })) toast('label saved');
+}
+
+$('#accountAddForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const input = $('#accountAddInput');
+  const name = input.value.trim();
+  if (!ACCOUNT_NAME.test(name)) return toast('lowercase letters, digits, - and _ only', true);
+  const btn = e.submitter;
+  if (btn) btn.disabled = true;
+  try {
+    await api('/api/accounts', { method: 'POST', body: { name }, timeout: 40000 });
+    input.value = '';
+    toast(`account ${name} added`);
+    renderAccountSettings();
+  } catch (err) {
+    toast(`add account ${stillRunning(err)}`, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+});
+
+// Logging in: the server starts `claude auth login` and returns its sign-in
+// URL; the user signs in on this device and pastes back the code it shows.
+// The code is only ever sent to the server, never kept here.
+let loginName = null;
+const loginBox = $('#loginBox');
+
+async function startLogin(name, btn) {
+  btn.disabled = true;
+  try {
+    const { url } = await api(`/api/accounts/${encodeURIComponent(name)}/login`, { method: 'POST', timeout: 40000 });
+    loginName = name;
+    $('#loginTitle').textContent = `Log in: ${acctLabel(name)}`;
+    const link = $('#loginUrl');
+    link.href = url;
+    $('#loginUrlText').textContent = url;
+    $('#loginCode').value = '';
+    loginBox.hidden = false;
+    loginBox.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  } catch (e) {
+    toast(`log in: ${stillRunning(e)}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function closeLogin() {
+  loginName = null;
+  loginBox.hidden = true;
+  $('#loginCode').value = '';
+}
+
+$('#loginCopy').addEventListener('click', async () => {
+  const url = $('#loginUrl').href;
+  try {
+    await navigator.clipboard.writeText(url);
+  } catch {
+    // The clipboard API needs a secure context; plain-http tailnet access falls back to a selection.
+    const ta = Object.assign(document.createElement('textarea'), { value: url });
+    document.body.append(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  toast('link copied');
+});
+
+$('#loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const input = $('#loginCode');
+  const code = input.value.trim();
+  if (!LOGIN_CODE.test(code)) return toast('that does not look like a sign-in code', true);
+  const name = loginName;
+  const btn = e.submitter;
+  if (btn) btn.disabled = true;
+  input.value = '';
+  try {
+    const r = await api(`/api/accounts/${encodeURIComponent(name)}/login/code`, { method: 'POST', body: { code }, timeout: 45000 });
+    closeLogin();
+    if (r.loggedIn) toast(`${acctLabel(name)}: logged in${r.email ? ` as ${r.email}` : ''}`);
+    else toast(`${acctLabel(name)}: ${r.error || 'not logged in'}`, true);
+    renderAccountSettings();
+  } catch (err) {
+    toast(`log in: ${stillRunning(err)}`, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+});
+
+$('#loginCancel').addEventListener('click', () => {
+  const name = loginName;
+  closeLogin();
+  if (name) api(`/api/accounts/${encodeURIComponent(name)}/login`, { method: 'DELETE' }).catch(() => {});
+});
 
 function showSettingsTab(name) {
   for (const seg of $('#segments').querySelectorAll('.seg')) {
@@ -874,9 +1005,9 @@ function openSettings(tab = 'folders') {
   renderAuth();
   clearPasswordFields();
   renderDiagnostics();
-  const switchable = !!state?.accounts?.switchable;
-  $('#segments [data-tab="accounts"]').hidden = !switchable;
-  if (tab === 'accounts' && !switchable) tab = 'folders';
+  const available = !!state?.accounts?.available;
+  $('#segments [data-tab="accounts"]').hidden = !available;
+  if (tab === 'accounts' && !available) tab = 'folders';
   showSettingsTab(tab);
   if (tab === 'accounts') renderAccountSettings();
   openSheet(settingsSheet);

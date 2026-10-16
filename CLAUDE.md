@@ -66,8 +66,25 @@ every check that can fail first, then kills an idle session and recreates it
 under the same name in the active account: `--resume <uuid>` for a small
 context the new account can see, otherwise fresh plus the restore command once
 `waitForPrompt()` sees an empty input box. A failed relaunch is retried once
-in the old account. `accounts.list` and `accounts.use` run programs, so only
-the config file on disk sets them; `saveConfig()` ignores the client's values.
+in the old account. `accounts.list`, `use`, `dir` and `add` run programs, so
+only the config file on disk sets them; `saveConfig()` ignores the client's
+values and takes only `accounts.labels` (display names) from it.
+
+Account management is optional and stays a no-op without a working account
+tool. `accountsAvailable()` is true only once `accounts.list` has run cleanly
+for the current config; until then the accounts tab is hidden and no `dir`,
+`auth status` or login process is spawned. A failing `list` is logged once per
+config and retried every five minutes. The same run builds the dir → name map
+(`accounts.dir` per name) that `accountName()` uses for badges and the active
+account, falling back to `accountLabel()`. `authStatus()` runs `claude auth
+status` per config dir, cached 60 s, and only `loggedIn`, `email` and
+`subscriptionType` leave the server. Login runs `claude auth login --claudeai`
+in a tmux session named `muxboard-login-<name>`, which `listSessions()` skips,
+so the list, rolling restart, snapshot, restore and warm handoff never see it;
+the session routes refuse it and `createSession()` refuses the prefix. The
+sign-in code is a secret: `submitLoginCode()` types it with `send-keys -l`,
+reports tmux failures with a fixed message (tmux's own error would quote its
+argv), drops any pane line holding part of it, and never logs or stores it.
 
 User-tailored settings (repo roots, send-key shortcuts) belong in
 `~/.config/muxboard/config.json`, never hardcoded — the app has a settings

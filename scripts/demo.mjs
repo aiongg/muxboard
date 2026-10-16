@@ -5,8 +5,9 @@
 //
 //   node scripts/demo.mjs        # http://127.0.0.1:8801
 //
-// Every action is a no-op that just reports success, except that switching
-// the account and reopening a session update the invented state.
+// Every action is a no-op that just reports success, except that switching,
+// adding and labelling accounts, the fake login flow and reopening a session
+// update the invented state.
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -108,10 +109,16 @@ for (const [name, status, ageMinutes, peek] of MORE) {
   SESSIONS.push({ name, repo: `~/projects/${name}`, status, ageMinutes, remoteControl: true, attached: false, version: '2.1.219', peek });
 }
 
-// Two accounts: new sessions start in "b", and one idle session still runs in
-// "a", so its badge stands out and its detail view offers a reopen.
+// Three accounts: new sessions start in "b", one idle session still runs in
+// "a", so its badge stands out and its detail view offers a reopen, and "c"
+// is not logged in, so the accounts tab offers a login.
 let activeAccount = 'b';
 for (const s of SESSIONS) s.account = s.name === 'toy-compiler' ? 'a' : 'b';
+const ACCOUNTS = [
+  { name: 'a', loggedIn: true, email: 'sam@example.com', plan: 'pro' },
+  { name: 'b', loggedIn: true, email: 'sam@example.org', plan: 'max' },
+  { name: 'c', loggedIn: false, email: null, plan: null },
+];
 
 const FOLDERS = ['acme-api', 'docs-site', 'infra', 'toy-compiler', 'website']
   .map(name => ({
@@ -131,7 +138,14 @@ const CONFIG = {
   ],
   rolloverCommand: '/restore',
   warmHandoff: { enabled: true, idleMinutes: 50, minTokens: 200000, command: '/handoff' },
-  accounts: { freshAbove: 100000, list: ['claude-account', 'names'], use: ['claude-account', 'use', '{name}'] },
+  accounts: {
+    freshAbove: 100000,
+    list: ['claude-account', 'names'],
+    use: ['claude-account', 'use', '{name}'],
+    dir: ['claude-account', 'dir', '{name}'],
+    add: ['claude-account', 'add', '{name}'],
+    labels: { a: 'personal', b: 'work' },
+  },
 };
 
 function state() {
@@ -159,7 +173,7 @@ function state() {
     folders: FOLDERS,
     restore: null,
     config: CONFIG,
-    accounts: { active: activeAccount, switchable: true },
+    accounts: { active: activeAccount, available: true, switchable: true },
     claude: { version: '2.1.219', updating: false, lastUpdate: null, pending: [] },
   };
 }
@@ -175,12 +189,45 @@ createServer(async (req, res) => {
   const { pathname } = new URL(req.url, 'http://x');
 
   if (pathname === '/api/state') return send(res, 200, state());
+  if (pathname === '/api/config' && req.method === 'PUT') {
+    const labels = (await readJson(req)).accounts?.labels || {};
+    CONFIG.accounts.labels = Object.fromEntries(Object.entries(labels)
+      .map(([k, v]) => [k, String(v).trim().slice(0, 32)]).filter(([, v]) => v));
+    return send(res, 200, CONFIG);
+  }
   if (pathname === '/api/config') return send(res, 200, CONFIG);
-  if (pathname === '/api/accounts') return send(res, 200, { active: activeAccount, names: ['a', 'b'] });
+  if (pathname === '/api/accounts' && req.method === 'POST') {
+    const { name } = await readJson(req);
+    if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(name)) return send(res, 400, { error: 'invalid account name' });
+    if (!ACCOUNTS.some(a => a.name === name)) ACCOUNTS.push({ name, loggedIn: false, email: null, plan: null });
+    return send(res, 200, { ok: true });
+  }
+  if (pathname === '/api/accounts') {
+    return send(res, 200, {
+      active: activeAccount, canUse: true, canAdd: true,
+      accounts: ACCOUNTS.map(a => ({ ...a, label: CONFIG.accounts.labels[a.name] ?? null, active: a.name === activeAccount, canLogin: true })),
+    });
+  }
   if (pathname === '/api/accounts/active' && req.method === 'POST') {
     const { name } = await readJson(req);
-    if (name === 'a' || name === 'b') activeAccount = name;
+    if (ACCOUNTS.some(a => a.name === name)) activeAccount = name;
     return send(res, 200, { active: activeAccount });
+  }
+  // Fake login: any code with a "#" in it signs the account in.
+  const login = pathname.match(/^\/api\/accounts\/([^/]+)\/login(\/code)?$/);
+  if (login) {
+    const acct = ACCOUNTS.find(a => a.name === decodeURIComponent(login[1]));
+    if (!acct) return send(res, 404, { error: 'no such account' });
+    if (req.method === 'POST' && !login[2]) {
+      return send(res, 200, { url: `https://claude.ai/oauth/authorize?code=true&client_id=demo-client&response_type=code&redirect_uri=https%3A%2F%2Fconsole.anthropic.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&state=demo-${acct.name}` });
+    }
+    if (req.method === 'POST') {
+      const { code } = await readJson(req);
+      if (!String(code).includes('#')) return send(res, 200, { loggedIn: false, email: null, error: 'OAuth error: invalid code' });
+      Object.assign(acct, { loggedIn: true, email: `${acct.name}@example.net`, plan: 'pro' });
+      return send(res, 200, { loggedIn: true, email: acct.email });
+    }
+    return send(res, 200, { ok: true });
   }
   const reopen = pathname.match(/^\/api\/sessions\/([^/]+)\/reopen$/);
   if (reopen && req.method === 'POST') {

@@ -477,6 +477,40 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .pwactions { display: flex; gap: 8px; flex-wrap: wrap; }
 .pwactions .btn { flex: 1; min-width: 96px; }
 
+/* One account per row: label and sign-in state, then name · email · plan, then buttons. */
+.acctrow { display: flex; flex-direction: column; gap: 4px; padding: 10px 2px; border-bottom: 1px solid var(--line); }
+.acct-head { display: flex; align-items: center; gap: 10px; }
+.acct-label {
+  flex: 1; min-width: 0; min-height: 36px;
+  font: 700 15px var(--mono); color: var(--cream);
+  background: none; border: 1px solid transparent; border-radius: 8px; padding: 0 6px; margin-left: -6px;
+}
+.acct-label::placeholder { color: var(--cream); }
+.acct-label:focus { outline: 2px solid var(--amber); background: var(--panel-up); }
+.acct-state { font-size: 11px; white-space: nowrap; }
+.acct-state.in { color: var(--ok); }
+.acct-state.out { color: var(--danger); }
+.acct-meta { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.acct-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.acct-actions .setrow-on { padding: 0 4px; margin-right: auto; }
+.acct-actions .btn:first-child { margin-right: auto; }
+
+.loginbox {
+  border: 1px solid var(--amber-soft);
+  background: color-mix(in srgb, var(--amber) 6%, var(--panel));
+  border-radius: var(--radius); padding: 14px; margin-top: 14px;
+}
+.loginbox h3 { font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--amber); }
+.loginbox .set-hint { margin-top: 6px; }
+.login-url {
+  display: block; margin-top: 10px; padding: 14px;
+  border-radius: 10px; background: var(--amber); color: var(--on-amber);
+  font: 600 13px var(--mono); line-height: 1.4; text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.login-url b { display: block; font-size: 14px; margin-bottom: 4px; }
+.login-url span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+
 .custompath { display: flex; gap: 8px; margin-top: 12px; border-top: 1px solid var(--line); padding-top: 14px; }
 .set-hint:last-child { margin-bottom: 2px; }
 .custompath input {

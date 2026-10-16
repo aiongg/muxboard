@@ -299,6 +299,7 @@ async function listSessions() {
     if (!line.trim()) continue;
     const [name, created, attached, panePid, cwd, cmd] = line.split(SEP);
     if (seen.has(name)) continue; // one entry per session (active pane wins)
+    if (isLoginSession(name)) continue; // runs claude, but only to sign in
     const claude = findClaudeProcess(Number(panePid));
     if (!claude && cmd !== 'claude') continue;
     seen.add(name);
@@ -314,7 +315,7 @@ async function listSessions() {
       pid,
       version: claudeExeVersion(pid),
       configDir, // server-side only: /api/state sends the account label
-      account: accountLabel(configDir),
+      account: accountName(configDir),
     });
   }
   const pids = new Set(sessions.map(s => s.pid));
@@ -437,7 +438,7 @@ async function readActiveAccount() {
     const { stdout } = await exec('/bin/zsh', ['-lc', 'print -r -- "${CLAUDE_CONFIG_DIR-}"'],
       { timeout: 5000, env: childEnv() });
     const dir = stdout.replace(/\n$/, '').split('\n').at(-1); // a profile may print first
-    return { dir, label: accountLabel(dir) };
+    return { dir };
   } catch {
     return null;
   }
@@ -461,35 +462,278 @@ function cachedActiveAccount() {
   return activeCache.value;
 }
 
-// A setup with one account never pays for the shell spawn.
-const accountsInUse = (sessions, cfg) =>
-  !!(cfg.accounts.list || cfg.accounts.use || sessions.some(s => s.account && s.account !== 'default'));
+// Badges and the active-account line need either a working account tool or a
+// session already running outside the default account; a setup with one
+// account never pays for the shell spawn.
+const accountsInUse = (sessions, cfg) => accountsAvailable(cfg) ||
+  sessions.some(s => s.configDir && claudeHome(s.configDir) !== DEFAULT_CLAUDE_HOME);
+
+const toolError = err => String(err.stderr || err.message || err).replace(/\s+/g, ' ').trim().slice(0, 500);
+const toolArgv = (argv, name) => argv.map(a => a.replaceAll('{name}', name));
+
+async function execAccountTool(argv, timeout) {
+  const [cmd, ...args] = argv;
+  const { stdout } = await exec(cmd.replace(/^~(?=\/)/, HOME), args, { timeout, env: childEnv() });
+  return stdout;
+}
 
 // The tool's own output stays in the server log; the client gets the exit code.
 async function runAccountTool(argv, timeout) {
-  const [cmd, ...args] = argv;
   try {
-    const { stdout } = await exec(cmd.replace(/^~(?=\/)/, HOME), args, { timeout, env: childEnv() });
-    return stdout;
+    return await execAccountTool(argv, timeout);
   } catch (err) {
-    console.error(`account command ${cmd} failed: ${String(err.stderr || err.message || err).trim().slice(0, 500)}`);
+    console.error(`account command ${argv[0]} failed: ${toolError(err)}`);
     throw httpError(500, `account command failed (exit ${err.code ?? err.signal ?? '?'})`);
   }
 }
 
-async function accountNames(cfg) {
-  if (!cfg.accounts.list) return [];
-  const out = await runAccountTool(cfg.accounts.list, 10_000);
-  return [...new Set(out.split('\n').map(l => l.trim()).filter(n => ACCOUNT_NAME.test(n)))].slice(0, 32);
+// Every account feature needs a list command that runs. Until it has run
+// cleanly for the current config, they stay hidden and nothing else
+// account-related is spawned. A failure is logged once per config and retried
+// every ACCOUNTS_TTL_MS, so installing the tool later is picked up. The same
+// run fills the name → config dir map (from the dir command) that names each
+// session's account.
+const ACCOUNTS_TTL_MS = 5 * 60_000;
+// A config dir is one line, absolute or under ~; empty means the default one.
+const ACCOUNT_DIR = /^(?:~|\/)[^\x00-\x1f]{0,400}$/;
+const accountKey = cfg => JSON.stringify([cfg.accounts.list, cfg.accounts.dir]);
+const noAccounts = key => ({ key, at: Date.now(), ok: false, names: [], dirs: new Map(), homes: new Map() });
+let dirsCache = { ...noAccounts(null), at: 0 };
+let dirsRead = null, loggedFailure = null;
+
+async function readAccountDirs(cfg) {
+  const key = accountKey(cfg);
+  let names;
+  try {
+    const out = await execAccountTool(cfg.accounts.list, 10_000);
+    names = [...new Set(out.split('\n').map(l => l.trim()).filter(n => ACCOUNT_NAME.test(n)))].slice(0, 32);
+  } catch (err) {
+    if (loggedFailure !== key) console.error(`accounts unavailable: ${cfg.accounts.list[0]}: ${toolError(err)}`);
+    loggedFailure = key;
+    return noAccounts(key);
+  }
+  loggedFailure = null;
+  const dirs = new Map();
+  if (cfg.accounts.dir) {
+    await Promise.all(names.map(async n => {
+      try {
+        const dir = (await execAccountTool(toolArgv(cfg.accounts.dir, n), 10_000)).trim();
+        if (dir === '' || ACCOUNT_DIR.test(dir)) dirs.set(n, dir);
+      } catch { /* this account gets no status and no login */ }
+    }));
+  }
+  const homes = new Map();
+  for (const [n, d] of dirs) if (!homes.has(claudeHome(d))) homes.set(claudeHome(d), n);
+  return { key, at: Date.now(), ok: true, names, dirs, homes };
+}
+
+// fresh skips a read already in flight, for after the tool changed something.
+function refreshAccountDirs(cfg, fresh = false) {
+  const key = accountKey(cfg);
+  if (!fresh && dirsRead?.key === key) return dirsRead.promise;
+  const promise = readAccountDirs(cfg).then(v => {
+    if (dirsRead?.promise === promise) { dirsCache = v; dirsRead = null; }
+    return v;
+  });
+  dirsRead = { key, promise };
+  return promise;
+}
+
+// Polls never wait: they see the last result and start a check when the
+// config changed or the result is old.
+function accountsAvailable(cfg) {
+  if (!cfg.accounts.list) return false;
+  const key = accountKey(cfg);
+  if (!dirsRead && (dirsCache.key !== key || Date.now() - dirsCache.at > ACCOUNTS_TTL_MS)) refreshAccountDirs(cfg);
+  return dirsCache.key === key && dirsCache.ok;
+}
+
+async function accountDirs(cfg, fresh = false) {
+  if (!cfg.accounts.list) throw httpError(404, 'no account list command configured');
+  const cached = dirsCache.key === accountKey(cfg) && Date.now() - dirsCache.at <= ACCOUNTS_TTL_MS;
+  const v = cached && !fresh ? dirsCache : await refreshAccountDirs(cfg, fresh);
+  if (!v.ok) throw httpError(503, 'accounts are unavailable');
+  return v;
+}
+
+// The tool's name for a config dir, else the derived label.
+function accountName(dir) {
+  if (dir == null) return null;
+  return dirsCache.homes.get(claudeHome(dir)) ?? accountLabel(dir);
 }
 
 async function useAccount(cfg, name) {
   if (!cfg.accounts.use) throw httpError(400, 'no account switch command configured');
   if (!ACCOUNT_NAME.test(name)) throw httpError(400, 'invalid account name');
-  const argv = cfg.accounts.use.map(a => a.replaceAll('{name}', name));
-  await runAccountTool(argv, 15_000);
-  const active = await activeAccountNow();
-  return { active: active?.label ?? null };
+  await runAccountTool(toolArgv(cfg.accounts.use, name), 15_000);
+  const [, active] = await Promise.all([refreshAccountDirs(cfg, true), activeAccountNow()]);
+  return { active: active ? accountName(active.dir) : null };
+}
+
+async function addAccount(cfg, name) {
+  if (!cfg.accounts.add) throw httpError(400, 'no account add command configured');
+  if (!ACCOUNT_NAME.test(name)) throw httpError(400, 'invalid account name');
+  await accountDirs(cfg);
+  await runAccountTool(toolArgv(cfg.accounts.add, name), 30_000);
+  await refreshAccountDirs(cfg, true);
+  return { ok: true };
+}
+
+// `claude auth status` prints JSON; only three of its fields leave the server.
+const STATUS_TTL_MS = 60_000;
+const statusCache = new Map(); // config home → { at, promise }
+
+function authStatus(dir, fresh = false) {
+  const home = claudeHome(dir);
+  const hit = statusCache.get(home);
+  if (!fresh && hit && Date.now() - hit.at < STATUS_TTL_MS) return hit.promise;
+  const env = childEnv();
+  if (dir) env.CLAUDE_CONFIG_DIR = home; else delete env.CLAUDE_CONFIG_DIR;
+  const promise = exec(CLAUDE_BIN, ['auth', 'status'], { timeout: 15_000, env })
+    // Logged out may exit non-zero and still print the JSON.
+    .then(r => r.stdout, err => String(err.stdout || ''))
+    .then(out => {
+      try {
+        const j = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1));
+        const str = (v, n) => typeof v === 'string' ? v.slice(0, n) : null;
+        return { loggedIn: j.loggedIn === true, email: str(j.email, 200), plan: str(j.subscriptionType, 40) };
+      } catch {
+        return null;
+      }
+    });
+  statusCache.set(home, { at: Date.now(), promise });
+  return promise;
+}
+
+async function accountsView(cfg) {
+  const [{ names, dirs }, active] = await Promise.all([accountDirs(cfg, true), activeAccountNow()]);
+  const activeName = active ? accountName(active.dir) : null;
+  const accounts = await Promise.all(names.map(async name => {
+    const st = dirs.has(name) ? await authStatus(dirs.get(name)) : null;
+    return {
+      name, label: cfg.accounts.labels[name] ?? null, active: name === activeName,
+      loggedIn: st?.loggedIn ?? null, email: st?.email ?? null, plan: st?.plan ?? null,
+      canLogin: dirs.has(name),
+    };
+  }));
+  return { active: activeName, accounts, canUse: !!cfg.accounts.use, canAdd: !!cfg.accounts.add };
+}
+
+// ------------------------------------------------------------- account login
+// `claude auth login --claudeai` runs in a hidden tmux session: it prints a
+// sign-in URL, the user signs in on their phone, and the code they get back is
+// typed into the pane. The code is a secret: it is never logged, stored,
+// echoed or put in an error message.
+
+const LOGIN_PREFIX = 'muxboard-login-';
+const LOGIN_URL_MS = 30_000;
+const LOGIN_CODE_MS = 30_000;
+const LOGIN_MAX_MS = 10 * 60_000;
+const LOGIN_CODE = /^[A-Za-z0-9#_.~+\/=-]{1,512}$/;
+const LOGIN_URL = /https:\/\/[A-Za-z0-9\-._~:\/?#\[\]@!$&()*+,;=%]+/;
+const LOGIN_OK = /login successful|successfully logged in|logged in as/i;
+const LOGIN_FAILED = /error|failed|invalid|expired|denied/i;
+const isLoginSession = name => name.startsWith(LOGIN_PREFIX);
+
+const logins = new Map(); // account name → { session, dir, url, timer }
+const loginBusy = new Set();
+
+function endLogin(name) {
+  const l = logins.get(name);
+  if (l) clearTimeout(l.timer);
+  logins.delete(name);
+  return tmux('kill-session', '-t', `=${LOGIN_PREFIX}${name}`);
+}
+
+async function loginPane(session) {
+  const target = `=${session}:`;
+  const [dead, pane] = await Promise.all([
+    tmux('display-message', '-p', '-t', target, '#{pane_dead}'),
+    tmux('capture-pane', '-p', '-J', '-t', target),
+  ]);
+  return { gone: !pane.ok, dead: !dead.ok || dead.out.trim() === '1', out: pane.out };
+}
+
+async function withLogin(name, run) {
+  if (!ACCOUNT_NAME.test(name)) throw httpError(400, 'invalid account name');
+  if (loginBusy.has(name)) throw httpError(409, 'a login step for this account is already running');
+  loginBusy.add(name);
+  try { return await run(); } finally { loginBusy.delete(name); }
+}
+
+// One login per account: asking again while one runs returns its URL.
+function startLogin(cfg, name) {
+  return withLogin(name, async () => {
+    const live = logins.get(name);
+    if (live?.url && !(await loginPane(live.session)).dead) return { url: live.url };
+    if (!cfg.accounts.dir) throw httpError(400, 'no account dir command configured');
+    const { dirs } = await accountDirs(cfg);
+    if (!dirs.has(name)) throw httpError(404, 'no config dir known for this account');
+    const dir = dirs.get(name);
+    await endLogin(name); // a leftover from an earlier run of the server
+    const session = LOGIN_PREFIX + name;
+    const account = dir ? `export CLAUDE_CONFIG_DIR=${shq(claudeHome(dir))}; ` : 'unset CLAUDE_CONFIG_DIR; ';
+    const cmd = `unset CLAUDECODE; ${account}exec ${shq(CLAUDE_BIN)} auth login --claudeai`;
+    // Wide enough that the URL is never wrapped by the TUI; -J rejoins tmux's own wraps.
+    const res = await tmux('new-session', '-d', '-s', session, '-x', '1000', '-y', '50', '-c', HOME,
+      '/bin/zsh', '-lc', cmd);
+    if (!res.ok) throw httpError(500, res.err);
+    // Keep the pane after exit, so the final message can still be read.
+    await tmux('set-option', '-w', '-t', `=${session}:`, 'remain-on-exit', 'on');
+    const entry = { session, dir, url: null, timer: setTimeout(() => endLogin(name), LOGIN_MAX_MS) };
+    entry.timer.unref();
+    logins.set(name, entry);
+    const until = Date.now() + LOGIN_URL_MS;
+    while (Date.now() < until) {
+      await sleep(500);
+      const pane = await loginPane(session);
+      const m = pane.out.match(LOGIN_URL);
+      if (m) {
+        entry.url = m[0].replace(/[.,;:!?)\]]+$/, '');
+        return { url: entry.url };
+      }
+      if (pane.gone || pane.dead) break;
+    }
+    await endLogin(name);
+    throw httpError(502, 'the login command printed no sign-in URL');
+  });
+}
+
+function submitLoginCode(name, raw) {
+  const code = typeof raw === 'string' ? raw.trim() : '';
+  if (!LOGIN_CODE.test(code)) throw httpError(400, 'that does not look like a sign-in code');
+  return withLogin(name, async () => {
+    const l = logins.get(name);
+    if (!l) throw httpError(404, 'no login is running for this account — start again');
+    const target = `=${l.session}:`;
+    const before = await loginPane(l.session);
+    if (before.gone || before.dead) { await endLogin(name); throw httpError(410, 'the login ended — start again'); }
+    const seen = new Set(before.out.split('\n').map(r => r.trim()));
+    // A line holding any part of the code is never reported back.
+    const leaks = r => r.includes(code) || (code.length >= 12 && (r.includes(code.slice(0, 12)) || r.includes(code.slice(-12))));
+    try {
+      // tmux's error text would carry its argv, so failures get a fixed message.
+      if (!(await tmux('send-keys', '-t', target, '-l', '--', code)).ok) throw httpError(500, 'could not type the code');
+      await sleep(150);
+      await tmux('send-keys', '-t', target, 'Enter');
+      let done = false, errorLine = null;
+      const until = Date.now() + LOGIN_CODE_MS;
+      while (!done && Date.now() < until) {
+        await sleep(500);
+        const pane = await loginPane(l.session);
+        const fresh = pane.out.split('\n').map(r => r.trim()).filter(r => r && !seen.has(r) && !leaks(r));
+        const bad = fresh.findLast(r => LOGIN_FAILED.test(r));
+        if (bad) errorLine = bad.slice(0, 200);
+        done = pane.gone || pane.dead || !!bad || fresh.some(r => LOGIN_OK.test(r));
+      }
+      const st = await authStatus(l.dir, true);
+      const out = { loggedIn: !!st?.loggedIn, email: st?.email ?? null };
+      if (!out.loggedIn) out.error = errorLine || (done ? 'sign-in failed' : 'the login did not finish in time');
+      return out;
+    } finally {
+      await endLogin(name);
+    }
+  });
 }
 
 function shortPath(p) {
@@ -600,6 +844,7 @@ function expandDir(dir) {
 async function createSession({ dir, name, cont, resume, configDir }) {
   const target = expandDir(dir);
   const base = sanitizeName(name) || sanitizeName(basename(target)) || 'session';
+  if (isLoginSession(base)) throw httpError(400, 'that session name is reserved');
   const finalName = await uniqueName(base);
   const rcName = `${HOSTNAME}:${finalName}`;
   const account = configDir === undefined ? ''
@@ -724,7 +969,8 @@ async function reopen(name, expect) {
     if (await promptDraft(name) !== '') throw httpError(409, 'input box not empty');
     const active = await activeAccountNow();
     if (!active) throw httpError(500, 'could not determine the active account');
-    if (active.label !== expect) throw httpError(409, `new sessions now start in ${active.label} — check and try again`);
+    const activeName = accountName(active.dir);
+    if (activeName !== expect) throw httpError(409, `new sessions now start in ${activeName} — check and try again`);
     const cfg = await loadConfig();
 
     // Everything that can fail is checked before the old session dies.
@@ -753,7 +999,7 @@ async function reopen(name, expect) {
       } catch { /* report the original failure */ }
       throw err;
     }
-    const out = { name: made.name, account: active.label, path, tokens, sent: false };
+    const out = { name: made.name, account: activeName, path, tokens, sent: false };
     if (path === 'transcript') {
       if (!await waitForPrompt(made.name, REOPEN_READY_MS)) return out;
       await sleep(1000); // let commands and skills finish loading
@@ -1297,7 +1543,12 @@ const server = createServer(async (req, res) => {
         restore: await restoreOffer(tmuxRunning, sessions),
         config: cfg,
         auth: { enabled: !!auth },
-        accounts: { active: active?.label ?? null, switchable: !!(cfg.accounts.list && cfg.accounts.use) },
+        // available: the account tool works, so the accounts tab is shown.
+        accounts: {
+          active: active ? accountName(active.dir) : null,
+          available: accountsAvailable(cfg),
+          switchable: accountsAvailable(cfg) && !!cfg.accounts.use,
+        },
         claude: {
           version: current,
           updating: update.running,
@@ -1313,14 +1564,34 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && path === '/api/accounts') {
-      const cfg = await loadConfig();
-      const active = await activeAccountNow();
-      return json(res, 200, { active: active?.label ?? null, names: await accountNames(cfg) });
+      return json(res, 200, await accountsView(await loadConfig()));
+    }
+
+    if (req.method === 'POST' && path === '/api/accounts') {
+      const body = await readBody(req);
+      return json(res, 200, await addAccount(await loadConfig(), String(body.name ?? '')));
     }
 
     if (req.method === 'POST' && path === '/api/accounts/active') {
       const body = await readBody(req);
       return json(res, 200, await useAccount(await loadConfig(), String(body.name ?? '')));
+    }
+
+    const login = path.match(/^\/api\/accounts\/([^/]+)\/login(\/code)?$/);
+    if (login) {
+      const name = decodeURIComponent(login[1]);
+      if (req.method === 'POST' && !login[2]) return json(res, 200, await startLogin(await loadConfig(), name));
+      if (req.method === 'DELETE' && !login[2]) {
+        if (!ACCOUNT_NAME.test(name)) throw httpError(400, 'invalid account name');
+        await endLogin(name);
+        return json(res, 200, { ok: true });
+      }
+      if (req.method === 'POST' && login[2]) {
+        // A parse error can quote the body, and the body holds the code.
+        let body;
+        try { body = await readBody(req); } catch { throw httpError(400, 'bad request'); }
+        return json(res, 200, await submitLoginCode(name, body.code));
+      }
     }
 
     if (req.method === 'POST' && path === '/api/update') {
@@ -1348,6 +1619,7 @@ const server = createServer(async (req, res) => {
     if (sess) {
       const name = decodeURIComponent(sess[1]);
       const sub = sess[2] || '';
+      if (isLoginSession(name)) return notFound(res);
       if (req.method === 'DELETE' && !sub) { await killSession(name); return json(res, 200, { ok: true }); }
       if (req.method === 'POST' && sub === '/keys') {
         await sendKeys(name, await readBody(req));
@@ -1373,7 +1645,7 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && path === '/api/restore') {
       const body = await readBody(req);
       const snap = await loadSnapshot();
-      const wanted = snap.sessions.filter(s => body.names?.includes(s.name));
+      const wanted = snap.sessions.filter(s => body.names?.includes(s.name) && !isLoginSession(s.name));
       const made = [];
       for (const s of wanted) {
         made.push(await createSession({ dir: s.cwd, name: s.name, cont: true, configDir: s.configDir ?? undefined }));

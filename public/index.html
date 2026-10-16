@@ -196,8 +196,27 @@
 
     <div class="panel" data-panel="accounts" role="tabpanel" hidden>
       <div id="accountList" class="setlist"></div>
-      <p class="set-hint">The account new sessions start in. Running sessions stay where they
-        are; each one's detail view can reopen it in this account.</p>
+      <div class="loginbox" id="loginBox" hidden>
+        <h3 id="loginTitle">Log in</h3>
+        <p class="set-hint">Open the link, sign in, then paste the code it shows.</p>
+        <a class="login-url" id="loginUrl" target="_blank" rel="noopener noreferrer"><b>open sign-in page ↗</b><span id="loginUrlText"></span></a>
+        <form class="addrow" id="loginForm">
+          <input id="loginCode" placeholder="paste the code" autocomplete="off" autocapitalize="off"
+                 spellcheck="false" enterkeyhint="done" maxlength="512" aria-label="Sign-in code">
+          <button type="submit" class="btn small">submit</button>
+        </form>
+        <div class="restore-actions">
+          <button type="button" class="btn small" id="loginCopy">copy link</button>
+          <button type="button" class="btn small danger" id="loginCancel">cancel</button>
+        </div>
+      </div>
+      <form class="addrow" id="accountAddForm" hidden>
+        <input id="accountAddInput" placeholder="new account name" autocomplete="off" autocapitalize="off"
+               spellcheck="false" enterkeyhint="done" maxlength="40" aria-label="New account name">
+        <button type="submit" class="btn small">add account</button>
+      </form>
+      <p class="set-hint">New sessions start in the marked account. Running sessions stay where they
+        are; each one's detail view can reopen it in that account. Tap a label to rename it.</p>
     </div>
 
     <div class="panel" data-panel="security" role="tabpanel" hidden>

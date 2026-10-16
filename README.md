@@ -71,9 +71,19 @@ simultaneously:
   account under the same name. The prompt cache is per account, so the reopened
   session starts cold either way: a context of up to `freshAbove` tokens is
   resumed as is; a bigger one starts fresh and gets your restore command with
-  the old transcript's UUID, as **fresh** does. With `accounts.list` and
-  `accounts.use` configured, settings also gets a picker that switches the
-  active account. With a single account none of this appears.
+  the old transcript's UUID, as **fresh** does. With a single account none of
+  this appears.
+- **Account management** (optional) — with an account tool configured
+  (`accounts.list`, see below), settings gets an **accounts** tab. Each account
+  shows its label (tap to rename), name, email, plan and whether it is logged
+  in, with **use** to make it the account new sessions start in and **log in**
+  to sign it in from the phone: Muxboard runs `claude auth login --claudeai`
+  in a hidden tmux session, shows the sign-in URL as a link, and types the code
+  you paste back into that session. A field below the list creates an account.
+  Without a working `accounts.list` — none configured, or the program missing
+  or failing — the tab, labels, login and add stay hidden and Muxboard runs
+  none of these commands; it logs the failure once and tries again when the
+  config changes or after five minutes.
 - **Stop** — kill the tmux session (tap twice to confirm).
 - **Update + rolling restart** — run `claude update` from the app; sessions
   keep running their old binary until restarted, so Muxboard flags stale
@@ -134,7 +144,10 @@ by hand:
   "accounts": {
     "freshAbove": 100000,
     "list": ["~/bin/accounts", "names"],
-    "use": ["~/bin/accounts", "use", "{name}"]
+    "use": ["~/bin/accounts", "use", "{name}"],
+    "dir": ["~/bin/accounts", "dir", "{name}"],
+    "add": ["~/bin/accounts", "add", "{name}"],
+    "labels": { "work": "Work (max)" }
   }
 }
 ```
@@ -162,16 +175,29 @@ by hand:
   transcript. A context is also resumed only when the new account's
   `projects/` folder can see the old transcript; otherwise reopen starts fresh,
   and your restore command must find the transcript in the other account's
-  folder. `list` and `use` are optional commands, each an argv array run
-  without a shell (a leading `~/` in the program path is expanded). They are
-  read from the config file only: saving settings from the app keeps the
-  stored values and ignores any the app sends. `list`
-  prints one account name per line; `use` switches the account your login
-  shell gives new sessions, with `{name}` replaced by the chosen name. Names
-  must match `[a-z0-9][a-z0-9_-]*`. The active account is whatever a login
-  shell (`zsh -lc`) sets as `CLAUDE_CONFIG_DIR`, so `use` has to change what a
-  new login shell sets. Muxboard only runs that shell when some session uses a
-  non-default account or `list` or `use` is configured.
+  folder. `list`, `use`, `dir` and `add` are optional commands, each an argv
+  array run without a shell (a leading `~/` in the program path is expanded).
+  They are read from the config file only: saving settings from the app keeps
+  the stored values and ignores any the app sends. In `use`, `dir` and `add`,
+  `{name}` is replaced by the account name. Names must match
+  `[a-z0-9][a-z0-9_-]{0,39}`.
+  - `list` prints one account name per line. Every other account feature
+    needs it to run cleanly.
+  - `use` switches the account your login shell gives new sessions. The
+    active account is whatever a login shell (`zsh -lc`) sets as
+    `CLAUDE_CONFIG_DIR`, so `use` has to change what a new login shell sets.
+  - `dir` prints the account's config dir (absolute or `~/…`), or nothing for
+    the default `~/.claude`. Badges and the active account then show the
+    tool's names, and the accounts tab can show sign-in state (from
+    `claude auth status`, cached for a minute) and offer **log in**. Without
+    it, a dir like `~/.claude-b` shows as `b`.
+  - `add` creates an account.
+  - `labels` maps account names to display names (at most 32 characters),
+    shown on badges, buttons and the accounts tab. The app edits them; an empty
+    label removes the entry.
+
+  Muxboard only runs the login shell when `list` works or some session uses a
+  non-default account.
 
 Environment overrides:
 
