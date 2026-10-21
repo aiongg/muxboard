@@ -896,7 +896,10 @@ async function createSession({ dir, name, cont, resume, configDir }) {
   const account = configDir === undefined ? ''
     : configDir ? `export CLAUDE_CONFIG_DIR=${shq(configDir)}; ` : 'unset CLAUDE_CONFIG_DIR; ';
   const resumeFlag = resume ? `--resume ${shq(resume)} ` : cont ? '--continue ' : '';
-  const cmd = `${account}exec ${shq(CLAUDE_BIN)} ${resumeFlag}--remote-control --name ${shq(rcName)}`;
+  // --name titles the conversation; the Remote Control session takes its name
+  // only from --remote-control's own argument. A fresh session falls back to
+  // --name, but a resumed one doesn't, so both get it.
+  const cmd = `${account}exec ${shq(CLAUDE_BIN)} ${resumeFlag}--remote-control ${shq(rcName)} --name ${shq(rcName)}`;
   const res = await tmux('new-session', '-d', '-s', finalName, '-c', target, '/bin/zsh', '-lc', cmd);
   if (!res.ok) throw httpError(500, res.err);
   return { name: finalName, rcName };
