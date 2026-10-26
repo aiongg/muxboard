@@ -986,7 +986,9 @@ async function rollover(name) {
 // picks how to carry the work over (/restore, a handoff pickup, /resume).
 const relaunching = new Set();
 
-async function relaunch(name, account) {
+// A session whose only activity is background shells or agents restarts only
+// when the user agreed to kill them (killJobs).
+async function relaunch(name, account, killJobs) {
   if (relaunching.has(name)) throw httpError(409, 'already restarting');
   relaunching.add(name);
   try {
@@ -995,7 +997,9 @@ async function relaunch(name, account) {
     const s = sessions.find(x => x.name === name);
     if (!s) throw httpError(404, 'no such session');
     const { status } = await peek(name);
-    if (status !== 'idle') throw httpError(409, `session is ${status} — restart it when it is idle`);
+    if (status !== 'idle' && !(status === 'background' && killJobs)) {
+      throw httpError(409, `session is ${status} — restart it when it is idle`);
+    }
     if (await promptDraft(name) !== '') throw httpError(409, 'input box not empty');
     const oldHome = sessionHome(s);
     let configDir = s.configDir ?? undefined;
@@ -1649,7 +1653,7 @@ const server = createServer(async (req, res) => {
       }
       if (req.method === 'POST' && sub === '/restart') {
         const body = await readBody(req);
-        return json(res, 200, await relaunch(name, body.account ? String(body.account) : null));
+        return json(res, 200, await relaunch(name, body.account ? String(body.account) : null, body.killJobs === true));
       }
       if (req.method === 'POST' && sub === '/handoff') {
         const body = await readBody(req);

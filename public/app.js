@@ -544,7 +544,7 @@ function syncActionButtons() {
   const labels = { fresh: 'fresh', stop: 'stop', restart: 'restart' };
   for (const [act, btn] of [['fresh', $('#freshBtn')], ['stop', $('#stopBtn')], ['restart', $('#restartBtn')]]) {
     const on = armed.has(`${act}:${selected}`);
-    btn.textContent = on ? 'sure?' : labels[act];
+    btn.textContent = on ? (act === 'restart' && restartKillsJobs ? 'kill jobs — sure?' : 'sure?') : labels[act];
     btn.classList.toggle('armed', on);
   }
 }
@@ -582,11 +582,21 @@ $('#restartAcct').addEventListener('change', () => {
 
 // Relaunch in the picked account. The account is read when the button is
 // armed, so a change between the two taps disarms it.
-$('#restartBtn').addEventListener('click', e => twoTap('restart', e.currentTarget, name => {
+// Restarting kills background shells and agents. The armed label says so,
+// and only a restart armed that way may kill them.
+let restartKillsJobs = false;
+$('#restartBtn').addEventListener('click', e => {
+  if (!armed.has(`restart:${selected}`)) {
+    restartKillsJobs = state?.sessions?.find(x => x.name === selected)?.status === 'background';
+  }
+  twoTap('restart', e.currentTarget, restartSession);
+});
+
+function restartSession(name) {
   const sel = $('#restartAcct');
   const account = sel.hidden ? null : sel.value || null;
   toast(`${name}: restarting…`);
-  api(`/api/sessions/${encodeURIComponent(name)}/restart`, { method: 'POST', body: { account }, timeout: 60000 })
+  api(`/api/sessions/${encodeURIComponent(name)}/restart`, { method: 'POST', body: { account, killJobs: restartKillsJobs }, timeout: 60000 })
     .then(r => {
       const where = r.account ? ` in ${acctLabel(r.account)}` : '';
       const prev = r.uuid ? ` — previous conversation ${r.uuid.slice(0, 8)}` : '';
@@ -594,7 +604,7 @@ $('#restartBtn').addEventListener('click', e => twoTap('restart', e.currentTarge
       setTimeout(poll, 800);
     })
     .catch(e => toast(`${name}: ${stillRunning(e)}`, true));
-}));
+}
 
 $('#stopBtn').addEventListener('click', e => twoTap('stop', e.currentTarget, name => {
   api(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' })

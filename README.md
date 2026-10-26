@@ -55,7 +55,8 @@ simultaneously:
   UUID (name configurable via `rolloverCommand`, default `/restore`); only
   offered while the session is idle.
 - **Restart** — **restart** (tap twice) relaunches an idle session under the
-  same name, in the account picked beside it (the session's own by default).
+  same name, or one that only runs background shells or agents (the second
+  tap reads "kill jobs — sure?", and the jobs die with the old process), in the account picked beside it (the session's own by default).
   In its own account it resumes the same conversation, and the new process
   re-reads CLAUDE.md, skills and settings. In another account it starts a new
   conversation and sends nothing: the prompt cache is per account, so the old
