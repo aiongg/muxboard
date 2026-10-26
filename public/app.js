@@ -466,8 +466,8 @@ $('#dHandoff').addEventListener('change', async e => {
   }
 });
 
-// "may restart others": lets the muxboard command, run from this session,
-// restart other sessions.
+// "may manage sessions": lets the muxboard command, run from this session,
+// create and restart other sessions.
 let controlSaving = false;
 $('#dControl').addEventListener('change', async e => {
   const name = selected;
@@ -475,7 +475,7 @@ $('#dControl').addEventListener('change', async e => {
   controlSaving = true;
   try {
     await api(`/api/sessions/${encodeURIComponent(name)}/control`, { method: 'POST', body: { enabled } });
-    toast(`${name}: ${enabled ? 'may' : 'may not'} restart other sessions`);
+    toast(`${name}: ${enabled ? 'may' : 'may not'} manage other sessions`);
   } catch (err) {
     e.target.checked = !enabled;
     toast(err.message, true);

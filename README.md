@@ -109,8 +109,12 @@ list and restart sessions:
 
 ```sh
 muxboard ls                      # each session's account and status
+muxboard new --account b --trust ~/code/craft-z
 muxboard restart --account b craft-x craft-y
 ```
+
+`new` starts a session in a folder under `~`, named after the folder unless
+`--name` is given, in the active account unless `--account` is given.
 
 `restart` follows the rules of the **restart** button: in the session's own
 account it resumes the conversation, in another it starts a new one and sends
@@ -118,12 +122,18 @@ nothing, and it refuses sessions that are not idle. `--kill-jobs` also restarts
 sessions that only run background shells or agents. A session cannot restart
 itself.
 
+`--trust` (on `new` and `restart`) answers Claude Code's "trust this folder"
+prompt, which appears the first time an account opens a folder. Muxboard reads
+the screen and moves the cursor to the "Yes, I trust" option before pressing
+Enter, so it does not depend on the order of the options. The command reports
+when the prompt could not be answered.
+
 The command talks to a Unix socket at `$XDG_RUNTIME_DIR/muxboard.sock` (else in
 the state folder) that only your user can open, so it needs no password.
-Listing works from anywhere. Restarting works only from a session whose **may
-restart others** switch is on in its detail view; the command names its
+Listing works from anywhere. Creating and restarting work only from a session
+whose **may manage sessions** switch is on in its detail view; the command names its
 session through `$TMUX_PANE`. Every session runs as your user, so the switch
-keeps a Claude from restarting sessions by mistake, not on purpose.
+keeps a Claude from managing sessions by mistake, not on purpose.
 
 ## Requirements
 

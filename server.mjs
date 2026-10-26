@@ -986,9 +986,55 @@ async function rollover(name) {
 // picks how to carry the work over (/restore, a handoff pickup, /resume).
 const relaunching = new Set();
 
+async function accountConfigDir(account) {
+  const { dirs } = await accountDirs(await loadConfig());
+  if (!dirs.has(account)) throw httpError(400, `unknown account ${account}`);
+  return dirs.get(account);
+}
+
+// Claude Code asks whether to trust a folder it has not opened before in that
+// account. acceptTrust answers yes by reading the screen rather than replaying
+// fixed keys: it moves the cursor (❯) one step at a time until it sits on the
+// "Yes, I trust" option, then presses Enter, so a reordered menu still works.
+// Returns 'accepted', 'none' when the session reached its input prompt without
+// asking, or 'unanswered' when it gave up.
+const TRUST_PROMPT = /trust this folder/i;
+const TRUST_YES = /\bYes,? I trust\b/i;
+const TRUST_WAIT_MS = 30_000;
+
+async function acceptTrust(name) {
+  const target = `=${name}:`;
+  const until = Date.now() + TRUST_WAIT_MS;
+  let moves = 0;
+  while (Date.now() < until) {
+    await sleep(500);
+    const vis = await tmux('capture-pane', '-p', '-t', target);
+    if (!vis.ok) return 'unanswered';
+    const lines = vis.out.split('\n');
+    if (!TRUST_PROMPT.test(vis.out)) {
+      // An empty input line means the session is ready and never asked.
+      if (moves === 0 && /^\s*❯\s*$/m.test(vis.out)) return 'none';
+      if (moves > 0) return 'accepted';
+      continue;
+    }
+    const yes = lines.findIndex(l => TRUST_YES.test(l));
+    const cursor = lines.findIndex(l => /^\s*❯/.test(l));
+    if (yes < 0 || cursor < 0) continue; // still drawing
+    if (cursor === yes) {
+      await tmux('send-keys', '-t', target, 'Enter');
+      moves++;
+      continue;
+    }
+    if (++moves > 8) return 'unanswered';
+    await tmux('send-keys', '-t', target, yes > cursor ? 'Down' : 'Up');
+  }
+  return 'unanswered';
+}
+
 // A session whose only activity is background shells or agents restarts only
-// when the user agreed to kill them (killJobs).
-async function relaunch(name, account, killJobs) {
+// when the user agreed to kill them (killJobs). trust answers the folder trust
+// prompt the relaunched session may show.
+async function relaunch(name, { account = null, killJobs = false, trust = false } = {}) {
   if (relaunching.has(name)) throw httpError(409, 'already restarting');
   relaunching.add(name);
   try {
@@ -1003,11 +1049,7 @@ async function relaunch(name, account, killJobs) {
     if (await promptDraft(name) !== '') throw httpError(409, 'input box not empty');
     const oldHome = sessionHome(s);
     let configDir = s.configDir ?? undefined;
-    if (account && account !== s.account) {
-      const { dirs } = await accountDirs(await loadConfig());
-      if (!dirs.has(account)) throw httpError(400, `unknown account ${account}`);
-      configDir = dirs.get(account);
-    }
+    if (account && account !== s.account) configDir = await accountConfigDir(account);
     const moved = claudeHome(configDir) !== oldHome;
 
     // Everything that can fail is checked before the old session dies.
@@ -1027,7 +1069,9 @@ async function relaunch(name, account, killJobs) {
       } catch { /* report the original failure */ }
       throw err;
     }
-    return { name: made.name, account: accountName(configDir ?? ''), resumed: saved && !moved, uuid: saved ? uuid : null };
+    const out = { name: made.name, account: accountName(configDir ?? ''), resumed: saved && !moved, uuid: saved ? uuid : null };
+    if (trust) out.trust = await acceptTrust(made.name);
+    return out;
   } finally {
     relaunching.delete(name);
   }
@@ -1655,7 +1699,7 @@ const server = createServer(async (req, res) => {
       }
       if (req.method === 'POST' && sub === '/restart') {
         const body = await readBody(req);
-        return json(res, 200, await relaunch(name, body.account ? String(body.account) : null, body.killJobs === true));
+        return json(res, 200, await relaunch(name, { account: body.account ? String(body.account) : null, killJobs: body.killJobs === true }));
       }
       if (req.method === 'POST' && sub === '/control') {
         const body = await readBody(req);
@@ -1691,8 +1735,8 @@ const server = createServer(async (req, res) => {
 // ---------------------------------------------------------------- control
 // The `muxboard` command (bin/muxboard.mjs) talks to a Unix socket only this
 // user can open, so it needs no password. Listing is open to every caller.
-// Restarting needs a caller whose session has "may restart others" switched
-// on. The caller names its tmux pane ($TMUX_PANE); every session runs as the
+// Creating and restarting need a caller whose session has "may manage
+// sessions" switched on. The caller names its tmux pane ($TMUX_PANE); every session runs as the
 // same user, so this keeps a session from restarting others by mistake, not
 // on purpose.
 
@@ -1726,6 +1770,14 @@ async function callerSession(pane) {
   return res.out.trim();
 }
 
+async function allowedCaller(pane) {
+  const caller = await callerSession(pane);
+  if ((await loadControlState()).allowed[caller] !== true) {
+    throw httpError(403, `${caller} may not manage other sessions — switch on "may manage sessions" for it in muxboard`);
+  }
+  return caller;
+}
+
 const controlServer = createServer(async (req, res) => {
   const path = new URL(req.url, 'http://x').pathname;
   try {
@@ -1745,10 +1797,7 @@ const controlServer = createServer(async (req, res) => {
     }
     if (req.method === 'POST' && path === '/restart') {
       const body = await readBody(req);
-      const caller = await callerSession(body.pane);
-      if ((await loadControlState()).allowed[caller] !== true) {
-        throw httpError(403, `${caller} may not restart other sessions — switch on "may restart others" for it in muxboard`);
-      }
+      const caller = await allowedCaller(body.pane);
       const names = Array.isArray(body.names) ? [...new Set(body.names.map(String))] : [];
       if (!names.length) throw httpError(400, 'no sessions named');
       const account = body.account ? String(body.account) : null;
@@ -1757,12 +1806,21 @@ const controlServer = createServer(async (req, res) => {
       for (const name of names) {
         if (name === caller) { results.push({ name, error: 'a session cannot restart itself' }); continue; }
         try {
-          results.push({ name, ...await relaunch(name, account, body.killJobs === true) });
+          results.push({ name, ...await relaunch(name, { account, killJobs: body.killJobs === true, trust: body.trust === true }) });
         } catch (err) {
           results.push({ name, error: err.message });
         }
       }
       return json(res, 200, { results });
+    }
+    if (req.method === 'POST' && path === '/new') {
+      const body = await readBody(req);
+      await allowedCaller(body.pane);
+      const configDir = body.account ? await accountConfigDir(String(body.account)) : undefined;
+      const made = await createSession({ dir: body.dir, name: body.name, configDir });
+      const out = { name: made.name };
+      if (body.trust === true) out.trust = await acceptTrust(made.name);
+      return json(res, 200, out);
     }
     notFound(res);
   } catch (err) {
