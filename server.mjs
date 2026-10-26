@@ -282,10 +282,53 @@ async function tmux(...args) {
 const SEP = '\x1f';
 
 // A "muxboard session" is any tmux session whose active pane is running Claude Code.
+// ------------------------------------------------------------- hook status
+// Sessions report their state through Claude Code hooks (bin/muxboard-hook.sh
+// posts each event to the control socket). The events are keyed by tmux pane:
+// a relaunched session gets a new pane, so an old process's state never
+// carries over. Sessions started before the hooks were configured send
+// nothing, and the screen alone decides their status.
+const hookState = new Map(); // pane id → { state, at, sessionId }
+const paneOf = new Map();    // session name → pane id, refreshed by listSessions
+// A turn that is interrupted sends no Stop, so "working" from a hook expires
+// unless later events renew it; tool calls renew it every few seconds.
+const HOOK_WORKING_MS = 2 * 60_000;
+const CONVERSATION_ID = /^[0-9a-f][0-9a-f-]{34}[0-9a-f]$/;
+
+function recordHookEvent(pane, ev) {
+  const prev = hookState.get(pane);
+  const at = Date.now();
+  const sessionId = CONVERSATION_ID.test(ev?.session_id || '') ? ev.session_id : prev?.sessionId ?? null;
+  const set = state => hookState.set(pane, { state, at, sessionId });
+  switch (ev?.hook_event_name) {
+    case 'SessionStart': case 'Stop': return set('idle');
+    case 'UserPromptSubmit': case 'PostToolUse': return set('working');
+    case 'Notification':
+      if (ev.notification_type === 'permission_prompt' || ev.notification_type === 'elicitation_dialog') return set('attention');
+      // Waiting for input does not answer a pending question.
+      if (ev.notification_type === 'idle_prompt' && prev?.state !== 'attention') return set('idle');
+      return;
+    case 'SessionEnd': hookState.delete(pane); return;
+  }
+}
+
+function hookFor(name) {
+  const pane = paneOf.get(name);
+  return pane ? hookState.get(pane) ?? null : null;
+}
+
+// The conversation a session runs: the hooks report it directly; otherwise
+// Claude Code's own per-process registry.
+function conversationOf(s) {
+  const id = hookState.get(s.paneId)?.sessionId;
+  if (id && existsSync(join(projectDir(s.cwd, sessionHome(s)), `${id}.jsonl`))) return id;
+  return sessionUuid(s.pid, s.cwd, sessionHome(s));
+}
+
 async function listSessions() {
   const fmt = [
     '#{session_name}', '#{session_created}', '#{session_attached}',
-    '#{pane_pid}', '#{pane_current_path}', '#{pane_current_command}',
+    '#{pane_pid}', '#{pane_current_path}', '#{pane_current_command}', '#{pane_id}',
   ].join(SEP);
   const res = await tmux('list-panes', '-a', '-F', fmt);
   if (!res.ok) return { tmuxRunning: false, sessions: [] };
@@ -297,7 +340,7 @@ async function listSessions() {
   let tmuxRunning = false;
   for (const line of res.out.split('\n')) {
     if (!line.trim()) continue;
-    const [name, created, attached, panePid, cwd, cmd] = line.split(SEP);
+    const [name, created, attached, panePid, cwd, cmd, paneId] = line.split(SEP);
     if (seen.has(name)) continue; // one entry per session (active pane wins)
     if (isLoginSession(name)) { // runs claude, but only to sign in
       const account = name.slice(LOGIN_PREFIX.length);
@@ -310,8 +353,10 @@ async function listSessions() {
     seen.add(name);
     const pid = claude ? claude.pid : Number(panePid);
     const configDir = processConfigDir(pid);
+    paneOf.set(name, paneId);
     sessions.push({
       name,
+      paneId,
       cwd,
       repo: shortPath(cwd),
       createdAt: Number(created) * 1000,
@@ -796,17 +841,22 @@ async function peek(name, lines = 0, scrollback = 0) {
   const vis = await tmux('capture-pane', '-p', '-t', `=${name}:`);
   if (!vis.ok) return { lines: [], status: 'gone' };
 
+  // The screen wins where it is unambiguous; hook events fill in where its
+  // wording is not recognised.
+  // The TUI renders choice dialogs (permissions, plan approval) as a numbered
+  // list with a ❯ cursor — that's the "waiting on you" signal. The folder
+  // trust dialog has no numbers, and typed text there picks "No, exit".
+  const hook = hookFor(name);
   let status = 'idle';
-  if (/esc to interrupt/i.test(vis.out)) status = 'working';
+  if (/❯\s*\d+\.\s/.test(vis.out) || trustDialog(vis.out)) status = 'attention';
+  else if (/esc to interrupt/i.test(vis.out)) status = 'working';
+  else if (hook?.state === 'attention') status = 'attention';
+  else if (hook?.state === 'working' && Date.now() - hook.at < HOOK_WORKING_MS) status = 'working';
   // A turn can end while background shells or subagents keep running. The
   // footer then counts the shells ("· 2 shells ·") and the agent panel under
   // it lists "● main" and one row per running agent. Killing the session now
   // would kill that work.
   else if (/·\s*\d+\s+(?:shells?|agents?)\s*·|^\s*●\s+main\s*$/m.test(vis.out)) status = 'background';
-  // The TUI renders choice dialogs (permissions, plan approval) as a numbered
-  // list with a ❯ cursor — that's the "waiting on you" signal. The folder
-  // trust dialog has no numbers, and typed text there picks "No, exit".
-  if (/❯\s*\d+\.\s/.test(vis.out) || trustDialog(vis.out)) status = 'attention';
 
   let out = vis.out;
   if (scrollback > 0) {
@@ -969,7 +1019,7 @@ async function rollover(name) {
   if (!s) throw httpError(404, 'no such session');
   const { status } = await peek(name);
   if (status !== 'idle') throw httpError(409, `session is ${status} — roll over when it is idle`);
-  const uuid = sessionUuid(s.pid, s.cwd, sessionHome(s));
+  const uuid = conversationOf(s);
   if (!uuid) throw httpError(500, 'could not identify the session transcript');
   const cfg = await loadConfig();
   await sendKeys(name, { kind: 'command', text: '/clear' });
@@ -1069,7 +1119,7 @@ async function relaunch(name, { account = null, killJobs = false, trust = false 
 
     // Everything that can fail is checked before the old session dies.
     const target = expandDir(s.cwd);
-    const uuid = sessionUuid(s.pid, s.cwd, oldHome);
+    const uuid = conversationOf(s);
     // A session that never recorded a turn has nothing to resume.
     const saved = !!uuid && existsSync(join(projectDir(s.cwd, oldHome), `${uuid}.jsonl`));
 
@@ -1254,7 +1304,7 @@ async function handoffTick() {
 // Returns true when it changed the persisted state.
 async function considerHandoff(s, cfg, st) {
   const wh = cfg.warmHandoff;
-  const uuid = sessionUuid(s.pid, s.cwd, sessionHome(s));
+  const uuid = conversationOf(s);
   const info = uuid && await transcriptTail(join(projectDir(s.cwd, sessionHome(s)), `${uuid}.jsonl`));
   if (!info) { handoffSentAt.delete(s.name); return false; }
 
@@ -1749,7 +1799,8 @@ const server = createServer(async (req, res) => {
 
 // ---------------------------------------------------------------- control
 // The `muxboard` command (bin/muxboard.mjs) talks to a Unix socket only this
-// user can open, so it needs no password. Listing is open to every caller.
+// user can open, so it needs no password. Listing and hook events are open
+// to every caller.
 // Creating and restarting need a caller whose session has "may manage
 // sessions" switched on. The caller names its tmux pane ($TMUX_PANE); every session runs as the
 // same user, so this keeps a session from restarting others by mistake, not
@@ -1806,6 +1857,7 @@ const controlServer = createServer(async (req, res) => {
       const active = accountsInUse(sessions, cfg) ? await activeAccountNow() : null;
       const list = await Promise.all(sessions.map(async s => ({
         name: s.name, account: s.account, status: (await peek(s.name)).status, cwd: s.cwd,
+        hook: hookState.get(s.paneId)?.state ?? null, conversation: conversationOf(s),
         control: control.allowed[s.name] === true,
       })));
       return json(res, 200, { active: active ? accountName(active.dir) : null, accounts, sessions: list });
@@ -1828,6 +1880,14 @@ const controlServer = createServer(async (req, res) => {
       }
       return json(res, 200, { results });
     }
+    // Hook events need no permission: they only report the sender's own state.
+    if (req.method === 'POST' && path === '/event') {
+      const pane = new URL(req.url, 'http://x').searchParams.get('pane') || '';
+      if (!TMUX_PANE.test(pane)) throw httpError(400, 'bad pane');
+      recordHookEvent(pane, await readBody(req));
+      res.writeHead(204);
+      return res.end();
+    }
     if (req.method === 'POST' && path === '/new') {
       const body = await readBody(req);
       await allowedCaller(body.pane);
@@ -1847,6 +1907,8 @@ const controlServer = createServer(async (req, res) => {
 async function listenControl() {
   await mkdir(join(CONTROL_SOCKET, '..'), { recursive: true });
   await rm(CONTROL_SOCKET, { force: true });
+  // Without the socket the dashboard still works; only the command does not.
+  controlServer.on('error', err => console.error(`control socket: ${err.message}`));
   controlServer.listen(CONTROL_SOCKET, async () => {
     await chmod(CONTROL_SOCKET, 0o600);
     console.log(`muxboard control socket at ${CONTROL_SOCKET}`);

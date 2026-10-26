@@ -137,6 +137,33 @@ whose **may manage sessions** switch is on in its detail view; the command names
 session through `$TMUX_PANE`. Every session runs as your user, so the switch
 keeps a Claude from managing sessions by mistake, not on purpose.
 
+## Status from Claude Code hooks (optional)
+
+Muxboard reads each session's status from its screen. Registering
+`bin/muxboard-hook.sh` as a Claude Code hook makes sessions also report their
+state themselves, which keeps working when the TUI's wording changes and gives
+the exact conversation ID, also after `/clear`. Add to `~/.claude/settings.json`
+(use the script's full path):
+
+```json
+"hooks": {
+  "SessionStart":     [{ "hooks": [{ "type": "command", "command": "/path/to/muxboard/bin/muxboard-hook.sh", "timeout": 5 }] }],
+  "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "/path/to/muxboard/bin/muxboard-hook.sh", "timeout": 5 }] }],
+  "PostToolUse":      [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/path/to/muxboard/bin/muxboard-hook.sh", "timeout": 5 }] }],
+  "Notification":     [{ "hooks": [{ "type": "command", "command": "/path/to/muxboard/bin/muxboard-hook.sh", "timeout": 5 }] }],
+  "Stop":             [{ "hooks": [{ "type": "command", "command": "/path/to/muxboard/bin/muxboard-hook.sh", "timeout": 5 }] }],
+  "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "/path/to/muxboard/bin/muxboard-hook.sh", "timeout": 5 }] }]
+}
+```
+
+The script needs `jq` and `curl`, sends only the event name, conversation ID
+and notification type to the control socket, prints nothing, and exits 0 even
+when Muxboard is not running. A session picks the hooks up when it starts;
+sessions started earlier keep their screen-only status. The screen still
+decides where it is clear (a numbered choice dialog, the trust dialog, "esc to
+interrupt"); hooks decide otherwise. "Working" from a hook lapses after two
+minutes without an event, because an interrupted turn sends no `Stop`.
+
 ## Requirements
 
 - **Linux.** Session and version detection read `/proc`, so macOS is not
