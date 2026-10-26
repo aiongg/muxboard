@@ -421,6 +421,7 @@ function renderDetail() {
   $('#dMeta').innerHTML = `<span>${esc(s.repo)}</span>${badges(s)}`;
   renderRestartAccounts(s, fresh);
   renderHandoff(s);
+  if (!controlSaving) $('#dControl').checked = !!s.control;
 
   // The screen sticks to the bottom like a terminal: follow new output unless
   // the user has scrolled up to read.
@@ -461,6 +462,25 @@ $('#dHandoff').addEventListener('change', async e => {
     toast(err.message, true);
   } finally {
     handoffSaving = false;
+    poll();
+  }
+});
+
+// "may restart others": lets the muxboard command, run from this session,
+// restart other sessions.
+let controlSaving = false;
+$('#dControl').addEventListener('change', async e => {
+  const name = selected;
+  const enabled = e.target.checked;
+  controlSaving = true;
+  try {
+    await api(`/api/sessions/${encodeURIComponent(name)}/control`, { method: 'POST', body: { enabled } });
+    toast(`${name}: ${enabled ? 'may' : 'may not'} restart other sessions`);
+  } catch (err) {
+    e.target.checked = !enabled;
+    toast(err.message, true);
+  } finally {
+    controlSaving = false;
     poll();
   }
 });

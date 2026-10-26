@@ -4,6 +4,9 @@
   "description": "Mobile-first PWA for managing Claude Code sessions that live in tmux",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "muxboard": "bin/muxboard.mjs"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/aiongg/muxboard.git"

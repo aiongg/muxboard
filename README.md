@@ -101,6 +101,30 @@ simultaneously:
 - **Offline screen** — the shell is cached by a service worker, so with the VPN
   off the app still opens, says so, and reconnects by itself.
 
+## Command line
+
+`bin/muxboard.mjs` (installed as `muxboard` by `npm link`, or symlink it onto
+your `PATH`) controls a running Muxboard from inside a session, so Claude can
+list and restart sessions:
+
+```sh
+muxboard ls                      # each session's account and status
+muxboard restart --account b craft-x craft-y
+```
+
+`restart` follows the rules of the **restart** button: in the session's own
+account it resumes the conversation, in another it starts a new one and sends
+nothing, and it refuses sessions that are not idle. `--kill-jobs` also restarts
+sessions that only run background shells or agents. A session cannot restart
+itself.
+
+The command talks to a Unix socket at `$XDG_RUNTIME_DIR/muxboard.sock` (else in
+the state folder) that only your user can open, so it needs no password.
+Listing works from anywhere. Restarting works only from a session whose **may
+restart others** switch is on in its detail view; the command names its
+session through `$TMUX_PANE`. Every session runs as your user, so the switch
+keeps a Claude from restarting sessions by mistake, not on purpose.
+
 ## Requirements
 
 - **Linux.** Session and version detection read `/proc`, so macOS is not

@@ -5,7 +5,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
-import { readFile, readdir, stat, mkdir, writeFile, rm, open as openFile } from 'node:fs/promises';
+import { readFile, readdir, stat, mkdir, writeFile, rm, chmod, open as openFile } from 'node:fs/promises';
 import { readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, extname, basename, sep } from 'node:path';
 import { homedir, hostname } from 'node:os';
@@ -1548,6 +1548,7 @@ const server = createServer(async (req, res) => {
       const peeked = await Promise.all(sessions.map(async s => ({ ...s, peek: await peek(s.name, 0, 300) })));
       if (tmuxRunning) await saveSnapshot(sessions);
       const handoff = await loadHandoffState();
+      const control = await loadControlState();
       const active = accountsInUse(sessions, cfg) ? cachedActiveAccount() : null;
       return json(res, 200, {
         host: HOSTNAME,
@@ -1559,6 +1560,7 @@ const server = createServer(async (req, res) => {
           peek: s.peek.lines,
           stale: !!(s.version && current && compareVersions(s.version, current) < 0),
           handoff: handoffView(s.name, cfg, handoff),
+          control: control.allowed[s.name] === true,
         })),
         folders: await listFolders(sessions, cfg),
         restore: await restoreOffer(tmuxRunning, sessions),
@@ -1655,6 +1657,10 @@ const server = createServer(async (req, res) => {
         const body = await readBody(req);
         return json(res, 200, await relaunch(name, body.account ? String(body.account) : null, body.killJobs === true));
       }
+      if (req.method === 'POST' && sub === '/control') {
+        const body = await readBody(req);
+        return json(res, 200, await setControlToggle(name, body.enabled));
+      }
       if (req.method === 'POST' && sub === '/handoff') {
         const body = await readBody(req);
         return json(res, 200, await setHandoffToggle(name, body.enabled));
@@ -1682,9 +1688,102 @@ const server = createServer(async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------- control
+// The `muxboard` command (bin/muxboard.mjs) talks to a Unix socket only this
+// user can open, so it needs no password. Listing is open to every caller.
+// Restarting needs a caller whose session has "may restart others" switched
+// on. The caller names its tmux pane ($TMUX_PANE); every session runs as the
+// same user, so this keeps a session from restarting others by mistake, not
+// on purpose.
+
+const CONTROL_FILE = join(STATE_DIR, 'control.json');
+const CONTROL_SOCKET = join(process.env.XDG_RUNTIME_DIR || STATE_DIR, 'muxboard.sock');
+const TMUX_PANE = /^%\d{1,9}$/;
+
+let controlState = null;
+async function loadControlState() {
+  if (controlState) return controlState;
+  let raw = null;
+  try { raw = JSON.parse(await readFile(CONTROL_FILE, 'utf8')); } catch { /* first run */ }
+  controlState = { allowed: raw?.allowed && typeof raw.allowed === 'object' ? raw.allowed : {} };
+  return controlState;
+}
+
+async function setControlToggle(name, enabled) {
+  const { sessions } = await listSessions();
+  if (!sessions.some(s => s.name === name)) throw httpError(404, 'no such session');
+  const st = await loadControlState();
+  if (enabled) st.allowed[name] = true; else delete st.allowed[name];
+  await mkdir(STATE_DIR, { recursive: true });
+  await writeFile(CONTROL_FILE, JSON.stringify(st, null, 2) + '\n');
+  return { enabled: !!enabled };
+}
+
+async function callerSession(pane) {
+  if (!TMUX_PANE.test(String(pane ?? ''))) throw httpError(400, 'run this inside a muxboard session ($TMUX_PANE is not set)');
+  const res = await tmux('display-message', '-p', '-t', pane, '#{session_name}');
+  if (!res.ok) throw httpError(400, `unknown tmux pane ${pane}`);
+  return res.out.trim();
+}
+
+const controlServer = createServer(async (req, res) => {
+  const path = new URL(req.url, 'http://x').pathname;
+  try {
+    if (req.method === 'GET' && path === '/sessions') {
+      const cfg = await loadConfig();
+      // Read first: session account names come from this list.
+      let accounts = [];
+      try { accounts = (await accountDirs(cfg)).names; } catch { /* single account */ }
+      const { sessions } = await listSessions();
+      const control = await loadControlState();
+      const active = accountsInUse(sessions, cfg) ? await activeAccountNow() : null;
+      const list = await Promise.all(sessions.map(async s => ({
+        name: s.name, account: s.account, status: (await peek(s.name)).status, cwd: s.cwd,
+        control: control.allowed[s.name] === true,
+      })));
+      return json(res, 200, { active: active ? accountName(active.dir) : null, accounts, sessions: list });
+    }
+    if (req.method === 'POST' && path === '/restart') {
+      const body = await readBody(req);
+      const caller = await callerSession(body.pane);
+      if ((await loadControlState()).allowed[caller] !== true) {
+        throw httpError(403, `${caller} may not restart other sessions — switch on "may restart others" for it in muxboard`);
+      }
+      const names = Array.isArray(body.names) ? [...new Set(body.names.map(String))] : [];
+      if (!names.length) throw httpError(400, 'no sessions named');
+      const account = body.account ? String(body.account) : null;
+      const results = [];
+      // One at a time: each relaunch lists and peeks every session.
+      for (const name of names) {
+        if (name === caller) { results.push({ name, error: 'a session cannot restart itself' }); continue; }
+        try {
+          results.push({ name, ...await relaunch(name, account, body.killJobs === true) });
+        } catch (err) {
+          results.push({ name, error: err.message });
+        }
+      }
+      return json(res, 200, { results });
+    }
+    notFound(res);
+  } catch (err) {
+    json(res, err.status || 500, { error: err.message });
+  }
+});
+
+// A socket left by a server that died is stale: this one replaces it.
+async function listenControl() {
+  await mkdir(join(CONTROL_SOCKET, '..'), { recursive: true });
+  await rm(CONTROL_SOCKET, { force: true });
+  controlServer.listen(CONTROL_SOCKET, async () => {
+    await chmod(CONTROL_SOCKET, 0o600);
+    console.log(`muxboard control socket at ${CONTROL_SOCKET}`);
+  });
+}
+
 server.listen(PORT, HOST, () => {
   console.log(`muxboard listening on http://${HOST}:${PORT} (root: ${REPOS_ROOT})`);
   killLoginSessions();
+  listenControl().catch(err => console.error(`control socket: ${err.message}`));
   setTimeout(handoffTick, 5000);
   setInterval(handoffTick, HANDOFF_TICK_MS);
 });
