@@ -296,6 +296,12 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .restore-row .r-path { font-size: 11px; color: var(--muted); display: block; font-weight: 400; }
 .btn.small { min-height: 42px; padding: 0 16px; }
 .btn.mini { min-height: 28px; padding: 0 10px; border-radius: 7px; font-size: 10px; text-transform: none; letter-spacing: .04em; }
+.mini-select {
+  min-height: 28px; padding: 0 6px; border-radius: 7px;
+  font: 11px var(--mono); color: var(--cream);
+  background: var(--panel-up); border: 1px solid var(--line);
+}
+.mini-select:focus { outline: 2px solid var(--amber); border-color: transparent; }
 .restore-actions { display: flex; gap: 8px; margin-top: 10px; }
 .restore-actions .btn { flex: 1; }
 

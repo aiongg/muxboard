@@ -158,7 +158,7 @@ const HANDOFF_TOO_LATE_MIN = 58;
 
 // list, use, dir and add are argv arrays run without a shell; null hides the
 // picker. labels maps an account name to a display name.
-const DEFAULT_ACCOUNTS = { freshAbove: 100000, list: null, use: null, dir: null, add: null, labels: {} };
+const DEFAULT_ACCOUNTS = { list: null, use: null, dir: null, add: null, labels: {} };
 
 const defaultConfig = () => ({
   roots: [shortPath(REPOS_ROOT)],
@@ -220,13 +220,10 @@ function cleanWarmHandoff(raw) {
 // account name only ever replaces "{name}" inside one element. A use, dir or
 // add command without "{name}" could not say which account it is about.
 function cleanAccounts(raw) {
-  const d = DEFAULT_ACCOUNTS;
   const argv = v => Array.isArray(v) && v.length >= 1 && v.length <= 16 &&
     v.every(a => typeof a === 'string' && a.length <= 200) && v[0].trim() ? [...v] : null;
   const named = v => { const a = argv(v); return a && a.some(x => x.includes('{name}')) ? a : null; };
   return {
-    freshAbove: Number.isInteger(raw?.freshAbove) && raw.freshAbove >= 0 && raw.freshAbove <= 10_000_000
-      ? raw.freshAbove : d.freshAbove,
     list: argv(raw?.list),
     use: named(raw?.use),
     dir: named(raw?.dir),
@@ -980,84 +977,55 @@ async function rollover(name) {
   return { uuid };
 }
 
-// --------------------------------------------------------- account reopen
+// ----------------------------------------------------------------- restart
 
-// The prompt cache is per account, so a session reopened in another account
-// starts cold either way. A small context is cheap to re-read and resumes as
-// is; a big one starts fresh and restores from the transcript, as rollover
-// does. Waiting on the restore send keeps the request open for up to
-// REOPEN_READY_MS.
-const REOPEN_READY_MS = 30_000;
-const reopening = new Set();
+// Restart relaunches an idle session under the same name. In its own account
+// it resumes the same conversation, so the new process re-reads CLAUDE.md,
+// skills and settings on a warm prompt cache. In another account it starts a
+// new conversation and sends nothing: the cache is per account, so the user
+// picks how to carry the work over (/restore, a handoff pickup, /resume).
+const relaunching = new Set();
 
-// The TUI is ready for input once its input box renders empty on an idle
-// screen. Gives up when the session dies (e.g. a resume that found nothing).
-async function waitForPrompt(name, ms) {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    await sleep(500);
-    const { status } = await peek(name);
-    if (status === 'gone') return false;
-    if (status === 'idle' && await promptDraft(name) === '') return true;
-  }
-  return false;
-}
-
-// expect is the active account the client showed when the button was armed;
-// a switch since then means the user agreed to a different target.
-async function reopen(name, expect) {
-  if (reopening.has(name)) throw httpError(409, 'already reopening');
-  reopening.add(name);
+async function relaunch(name, account) {
+  if (relaunching.has(name)) throw httpError(409, 'already restarting');
+  relaunching.add(name);
   try {
     if (restarting.has(name) || pendingRestart.has(name)) throw httpError(409, 'a restart is queued for this session');
     const { sessions } = await listSessions();
     const s = sessions.find(x => x.name === name);
     if (!s) throw httpError(404, 'no such session');
     const { status } = await peek(name);
-    if (status !== 'idle') throw httpError(409, `session is ${status} — reopen it when it is idle`);
+    if (status !== 'idle') throw httpError(409, `session is ${status} — restart it when it is idle`);
     if (await promptDraft(name) !== '') throw httpError(409, 'input box not empty');
-    const active = await activeAccountNow();
-    if (!active) throw httpError(500, 'could not determine the active account');
-    const activeName = accountName(active.dir);
-    if (activeName !== expect) throw httpError(409, `new sessions now start in ${activeName} — check and try again`);
-    const cfg = await loadConfig();
+    const oldHome = sessionHome(s);
+    let configDir = s.configDir ?? undefined;
+    if (account && account !== s.account) {
+      const { dirs } = await accountDirs(await loadConfig());
+      if (!dirs.has(account)) throw httpError(400, `unknown account ${account}`);
+      configDir = dirs.get(account);
+    }
+    const moved = claudeHome(configDir) !== oldHome;
 
     // Everything that can fail is checked before the old session dies.
     const target = expandDir(s.cwd);
-    const oldHome = sessionHome(s), newHome = claudeHome(active.dir);
     const uuid = sessionUuid(s.pid, s.cwd, oldHome);
-    if (!uuid) throw httpError(409, "could not identify the session's conversation");
-    const info = await transcriptTail(join(projectDir(s.cwd, oldHome), `${uuid}.jsonl`));
-    const tokens = info?.lastAssistant?.tokens ?? 0;
-    // --resume only finds transcripts under the new account's own projects
-    // folder, so it is used only when that account can see this one.
-    const visible = existsSync(join(projectDir(s.cwd, newHome), `${uuid}.jsonl`));
-    const path = !info ? 'new' // registered, but no turn was ever recorded
-      : tokens <= cfg.accounts.freshAbove && visible ? 'continue' : 'transcript';
+    // A session that never recorded a turn has nothing to resume.
+    const saved = !!uuid && existsSync(join(projectDir(s.cwd, oldHome), `${uuid}.jsonl`));
 
     await killSession(name);
     let made;
     try {
-      made = await createSession({
-        dir: target, name, configDir: active.dir, resume: path === 'continue' ? uuid : undefined,
-      });
+      made = await createSession({ dir: target, name, configDir, resume: saved && !moved ? uuid : undefined });
     } catch (err) {
       // Put the conversation back where it was rather than leave nothing running.
       try {
-        await createSession({ dir: target, name, configDir: s.configDir ?? undefined, resume: info ? uuid : undefined });
+        await createSession({ dir: target, name, configDir: s.configDir ?? undefined, resume: saved ? uuid : undefined });
       } catch { /* report the original failure */ }
       throw err;
     }
-    const out = { name: made.name, account: activeName, path, tokens, sent: false };
-    if (path === 'transcript') {
-      if (!await waitForPrompt(made.name, REOPEN_READY_MS)) return out;
-      await sleep(1000); // let commands and skills finish loading
-      await sendKeys(made.name, { kind: 'command', text: `${cfg.rolloverCommand} ${uuid}` });
-      out.sent = true;
-    }
-    return out;
+    return { name: made.name, account: accountName(configDir ?? ''), resumed: saved && !moved, uuid: saved ? uuid : null };
   } finally {
-    reopening.delete(name);
+    relaunching.delete(name);
   }
 }
 
@@ -1348,7 +1316,7 @@ function processRestarts(peeked) {
     const s = live.get(name);
     if (!s) { pendingRestart.delete(name); continue; }
     if (!hasConversation(s.cwd, sessionHome(s))) { pendingRestart.delete(name); continue; }
-    if (restarting.has(name) || reopening.has(name) || s.peek.status !== 'idle') continue;
+    if (restarting.has(name) || relaunching.has(name) || s.peek.status !== 'idle') continue;
     restarting.add(name);
     (async () => {
       try {
@@ -1597,6 +1565,8 @@ const server = createServer(async (req, res) => {
           active: active ? accountName(active.dir) : null,
           available: accountsAvailable(cfg),
           switchable: accountsAvailable(cfg) && !!cfg.accounts.use,
+          // Accounts with a known config dir, which a session can restart in.
+          names: dirsCache.ok ? dirsCache.names.filter(n => dirsCache.dirs.has(n)) : [],
         },
         claude: {
           version: current,
@@ -1677,9 +1647,9 @@ const server = createServer(async (req, res) => {
       if (req.method === 'POST' && sub === '/rollover') {
         return json(res, 200, await rollover(name));
       }
-      if (req.method === 'POST' && sub === '/reopen') {
+      if (req.method === 'POST' && sub === '/restart') {
         const body = await readBody(req);
-        return json(res, 200, await reopen(name, String(body.account ?? '')));
+        return json(res, 200, await relaunch(name, body.account ? String(body.account) : null));
       }
       if (req.method === 'POST' && sub === '/handoff') {
         const body = await readBody(req);

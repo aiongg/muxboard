@@ -83,8 +83,9 @@
         </header>
         <div class="meta detail-meta">
           <span class="meta-items" id="dMeta"></span>
-          <button class="btn mini" id="reopenBtn" hidden
-                  title="Restart this session in the account new sessions use"></button>
+          <button class="btn mini" id="restartBtn"
+                  title="Relaunch this session: in its own account it resumes the conversation, in another it starts a new one">restart</button>
+          <select class="mini-select" id="restartAcct" hidden aria-label="Account to restart in"></select>
           <span class="badge sent" id="dHandoffSent" hidden></span>
           <label class="toggle mini" title="Send the handoff command once while a big idle session's cache is still warm">
             <input type="checkbox" id="dHandoff">
@@ -217,7 +218,7 @@
         <button type="submit" class="btn small">add account</button>
       </form>
       <p class="set-hint">New sessions start in the marked account. Running sessions stay where they
-        are; each one's detail view can reopen it in that account. Tap a label to rename it.</p>
+        are; each one's detail view can restart it in another account. Tap a label to rename it.</p>
     </div>
 
     <div class="panel" data-panel="security" role="tabpanel" hidden>

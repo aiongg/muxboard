@@ -54,6 +54,14 @@ simultaneously:
   skill or slash command in your Claude Code setup that accepts a session
   UUID (name configurable via `rolloverCommand`, default `/restore`); only
   offered while the session is idle.
+- **Restart** — **restart** (tap twice) relaunches an idle session under the
+  same name, in the account picked beside it (the session's own by default).
+  In its own account it resumes the same conversation, and the new process
+  re-reads CLAUDE.md, skills and settings. In another account it starts a new
+  conversation and sends nothing: the prompt cache is per account, so the old
+  context would be re-read cold anyway, and you choose how to carry the work
+  over (your restore command, a handoff pickup, or `/resume`). The toast shows
+  the old conversation's UUID prefix.
 - **Warm handoff** — the prompt cache of a main Claude Code session lasts an
   hour on a subscription. When a session has sat idle for `idleMinutes`
   (default 50) with more than `minTokens` of context (default 200k), Muxboard
@@ -67,12 +75,7 @@ simultaneously:
   (unset means `~/.claude`). If your login shell sets it, Muxboard shows each
   session's account as a badge (`~/.claude-b` shows as `b`), names the account
   new sessions will start in, and highlights sessions running in a different
-  one. **reopen in …** (tap twice) restarts an idle session in the active
-  account under the same name. The prompt cache is per account, so the reopened
-  session starts cold either way: a context of up to `freshAbove` tokens is
-  resumed as is; a bigger one starts fresh and gets your restore command with
-  the old transcript's UUID, as **fresh** does. With a single account none of
-  this appears.
+  one. Each session's **restart** can move it to another account. With a single account none of this appears.
 - **Account management** (optional) — with an account tool configured
   (`accounts.list`, see below), settings gets an **accounts** tab. Each account
   shows its label (tap to rename), name, email, plan, whether it is logged
@@ -144,7 +147,6 @@ by hand:
   "rolloverCommand": "/restore",
   "warmHandoff": { "enabled": true, "idleMinutes": 50, "minTokens": 200000, "command": "/handoff" },
   "accounts": {
-    "freshAbove": 100000,
     "list": ["~/bin/accounts", "names"],
     "use": ["~/bin/accounts", "use", "{name}"],
     "dir": ["~/bin/accounts", "dir", "{name}"],
@@ -172,12 +174,7 @@ by hand:
   command or plain text, one line, 200 chars. Point it at a skill that writes a
   handoff file.
 - **`accounts`** — multiple Claude accounts (see *Accounts* above).
-  `freshAbove` (default 100000) is the largest context, counted like
-  `minTokens`, that **reopen** resumes; a bigger one starts fresh from the
-  transcript. A context is also resumed only when the new account's
-  `projects/` folder can see the old transcript; otherwise reopen starts fresh,
-  and your restore command must find the transcript in the other account's
-  folder. `list`, `use`, `dir` and `add` are optional commands, each an argv
+  `list`, `use`, `dir` and `add` are optional commands, each an argv
   array run without a shell (a leading `~/` in the program path is expanded).
   They are read from the config file only: saving settings from the app keeps
   the stored values and ignores any the app sends. In `use`, `dir` and `add`,

@@ -13,7 +13,7 @@ let failures = 0;
 let pollTimer = null;
 let sendTargetName = null;
 let selected = null;          // name of the session shown in the detail pane
-const armed = new Map();      // "stop:name" / "fresh:name" / "reopen:name" -> disarm timer for two-tap confirm
+const armed = new Map();      // "stop:name" / "fresh:name" / "restart:name" -> disarm timer for two-tap confirm
 
 // Two panes side by side on a wide screen; one at a time on a phone.
 const wide = matchMedia('(min-width: 880px)');
@@ -419,7 +419,7 @@ function renderDetail() {
   $('#dName').textContent = s.name;
   $('#dAge').textContent = age(s.createdAt);
   $('#dMeta').innerHTML = `<span>${esc(s.repo)}</span>${badges(s)}`;
-  $('#reopenBtn').hidden = !(accountsShown() && otherAccount(s));
+  renderRestartAccounts(s, fresh);
   renderHandoff(s);
 
   // The screen sticks to the bottom like a terminal: follow new output unless
@@ -541,8 +541,8 @@ function twoTap(act, btn, run) {
 }
 
 function syncActionButtons() {
-  const labels = { fresh: 'fresh', stop: 'stop', reopen: `reopen in ${state?.accounts?.active ? acctLabel(state.accounts.active) : '?'}` };
-  for (const [act, btn] of [['fresh', $('#freshBtn')], ['stop', $('#stopBtn')], ['reopen', $('#reopenBtn')]]) {
+  const labels = { fresh: 'fresh', stop: 'stop', restart: 'restart' };
+  for (const [act, btn] of [['fresh', $('#freshBtn')], ['stop', $('#stopBtn')], ['restart', $('#restartBtn')]]) {
     const on = armed.has(`${act}:${selected}`);
     btn.textContent = on ? 'sure?' : labels[act];
     btn.classList.toggle('armed', on);
@@ -557,33 +557,44 @@ $('#freshBtn').addEventListener('click', e => twoTap('fresh', e.currentTarget, n
     .catch(e => toast(e.message, true));
 }));
 
-// Restart the session in the active account. The server resumes a small
-// context as is and starts a big one fresh from its transcript, and may wait
-// for the new TUI before it answers.
-// The target account is the one on the button when it was armed; the server
-// refuses if new sessions have moved elsewhere since.
-let reopenTarget = null;
-$('#reopenBtn').addEventListener('click', e => {
-  if (!armed.has(`reopen:${selected}`)) reopenTarget = state?.accounts?.active;
-  twoTap('reopen', e.currentTarget, reopenSession);
-});
-
 // A request the client gave up on may still be working on the server.
 const stillRunning = e => e.name === 'AbortError' ? 'may still be running; check the list' : e.message;
 
-function reopenSession(name) {
-  toast(`${name}: reopening…`);
-  api(`/api/sessions/${encodeURIComponent(name)}/reopen`, { method: 'POST', body: { account: reopenTarget }, timeout: 60000 })
+// The picker defaults to the session's own account each time a session is
+// shown, and keeps the user's pick across polls.
+function renderRestartAccounts(s, fresh) {
+  const sel = $('#restartAcct');
+  const names = state.accounts?.names || [];
+  sel.hidden = !(accountsShown() && names.length > 1);
+  if (sel.hidden) return;
+  const opts = names.map(n => `<option value="${esc(n)}">${esc(acctLabel(n))}</option>`).join('');
+  if (fresh || sel.dataset.opts !== opts) {
+    const keep = fresh ? s.account : sel.value;
+    sel.innerHTML = opts;
+    sel.dataset.opts = opts;
+    sel.value = names.includes(keep) ? keep : (names.includes(s.account) ? s.account : '');
+  }
+}
+$('#restartAcct').addEventListener('change', () => {
+  armed.forEach((t, k) => k.startsWith('restart:') && (clearTimeout(t), armed.delete(k)));
+  syncActionButtons();
+});
+
+// Relaunch in the picked account. The account is read when the button is
+// armed, so a change between the two taps disarms it.
+$('#restartBtn').addEventListener('click', e => twoTap('restart', e.currentTarget, name => {
+  const sel = $('#restartAcct');
+  const account = sel.hidden ? null : sel.value || null;
+  toast(`${name}: restarting…`);
+  api(`/api/sessions/${encodeURIComponent(name)}/restart`, { method: 'POST', body: { account }, timeout: 60000 })
     .then(r => {
-      const where = `${name}: reopened in ${acctLabel(r.account)}`;
-      if (r.path === 'continue') toast(`${where}, continued`);
-      else if (r.path === 'new') toast(`${where}, new conversation`);
-      else if (r.sent) toast(`${where} from transcript`);
-      else toast(`${where}, but it never became ready — ${conf().rolloverCommand || 'restore'} not sent`, true);
+      const where = r.account ? ` in ${acctLabel(r.account)}` : '';
+      const prev = r.uuid ? ` — previous conversation ${r.uuid.slice(0, 8)}` : '';
+      toast(r.resumed ? `${name}: restarted${where}` : `${name}: restarted${where}, new conversation${prev}`);
       setTimeout(poll, 800);
     })
     .catch(e => toast(`${name}: ${stillRunning(e)}`, true));
-}
+}));
 
 $('#stopBtn').addEventListener('click', e => twoTap('stop', e.currentTarget, name => {
   api(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' })
