@@ -111,6 +111,7 @@ list and restart sessions:
 muxboard ls                      # each session's account and status
 muxboard new --account b --trust ~/code/craft-z
 muxboard restart --account b craft-x craft-y
+muxboard watch                   # report sessions that wait for input
 ```
 
 `new` starts a session in a folder under `~`, named after the folder unless
@@ -130,9 +131,15 @@ the screen and moves the cursor to the "Yes, I trust" option before pressing
 Enter, so it does not depend on the order of the options. The command reports
 when the prompt could not be answered.
 
+`watch` reports each session that starts waiting for input (a permission
+prompt, a question, a plan approval, the trust prompt) with the question as
+its screen shows it, and again when it moves on. It watches every session but
+the caller's own, or the ones named, until stopped; `--once` exits after the
+first report and `--json` prints one object per event.
+
 The command talks to a Unix socket at `$XDG_RUNTIME_DIR/muxboard.sock` (else in
 the state folder) that only your user can open, so it needs no password.
-Listing works from anywhere. Creating and restarting work only from a session
+Listing and watching work from anywhere. Creating and restarting work only from a session
 whose **may manage sessions** switch is on in its detail view; the command names its
 session through `$TMUX_PANE`. Every session runs as your user, so the switch
 keeps a Claude from managing sessions by mistake, not on purpose.

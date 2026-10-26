@@ -892,6 +892,33 @@ async function peek(name, lines = 0, scrollback = 0) {
   return { lines: lines > 0 ? cleaned.slice(-lines) : cleaned, status };
 }
 
+// The question a session in attention waits on, read from its visible screen:
+// the block from the rule above the ❯ cursor down to the dialog's footer.
+// Without a cursor (status came from a hook) it is the screen's last rows.
+async function pendingPrompt(name) {
+  const vis = await tmux('capture-pane', '-p', '-t', `=${name}:`);
+  if (!vis.ok) return null;
+  const rows = vis.out.split('\n').map(r => r.trimEnd());
+  while (rows.length && rows[rows.length - 1] === '') rows.pop();
+  let cursor = -1;
+  for (let i = rows.length - 1; i >= 0 && cursor < 0; i--) {
+    if (/^\s*❯\s*\d+\.\s/.test(rows[i]) || (/❯/.test(rows[i]) && (TRUST_YES.test(rows[i]) || TRUST_NO.test(rows[i])))) cursor = i;
+  }
+  let start = Math.max(0, rows.length - 15);
+  if (cursor >= 0) {
+    start = Math.max(0, cursor - 40);
+    for (let i = cursor - 1; i >= start; i--) if (/^\s*[─━]{8,}/.test(rows[i])) { start = i + 1; break; }
+  }
+  const out = [];
+  for (const r of rows.slice(start)) {
+    if (/^\s*[─━]{8,}/.test(r)) continue;
+    if (r === '' && (!out.length || out[out.length - 1] === '')) continue;
+    out.push(r);
+  }
+  while (out.length && out[out.length - 1] === '') out.pop();
+  return out.slice(0, 40).join('\n');
+}
+
 function isChromeFooter(row) {
   if (row === '') return true;
   if (/^\s*─{8,}/.test(row)) return true;   // prompt-area rules (may embed the session name)
@@ -1861,6 +1888,19 @@ const controlServer = createServer(async (req, res) => {
         control: control.allowed[s.name] === true,
       })));
       return json(res, 200, { active: active ? accountName(active.dir) : null, accounts, sessions: list });
+    }
+    // Status of every session, with the pending question of each one in
+    // attention; the caller's own session is left out.
+    if (req.method === 'GET' && path === '/attention') {
+      const pane = new URL(req.url, 'http://x').searchParams.get('pane');
+      const caller = pane ? await callerSession(pane).catch(() => null) : null;
+      const { sessions } = await listSessions();
+      const list = await Promise.all(sessions.filter(s => s.name !== caller).map(async s => {
+        const { status } = await peek(s.name);
+        return { name: s.name, account: s.account, status,
+          prompt: status === 'attention' ? await pendingPrompt(s.name) : null };
+      }));
+      return json(res, 200, { caller, sessions: list });
     }
     if (req.method === 'POST' && path === '/restart') {
       const body = await readBody(req);
