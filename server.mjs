@@ -806,7 +806,7 @@ async function peek(name, lines = 0, scrollback = 0) {
   // The TUI renders choice dialogs (permissions, plan approval) as a numbered
   // list with a ❯ cursor — that's the "waiting on you" signal. The folder
   // trust dialog has no numbers, and typed text there picks "No, exit".
-  if (/❯\s*\d+\.\s/.test(vis.out) || TRUST_PROMPT.test(vis.out)) status = 'attention';
+  if (/❯\s*\d+\.\s/.test(vis.out) || trustDialog(vis.out)) status = 'attention';
 
   let out = vis.out;
   if (scrollback > 0) {
@@ -999,13 +999,19 @@ async function accountConfigDir(account) {
 // "Yes, I trust" option, then presses Enter, so a reordered menu still works.
 // Returns 'accepted', 'none' when the session reached its input prompt without
 // asking, or 'unanswered' when it gave up.
-const TRUST_PROMPT = /trust this folder/i;
-const TRUST_YES = /\bYes,? I trust\b/i;
+// Each option must be a line of its own, so a session whose output quotes the
+// dialog is not mistaken for one showing it.
+const TRUST_YES = /^\s*(?:❯\s*)?(?:\d+\.\s*)?Yes,? I trust this folder\s*$/i;
+const TRUST_NO = /^\s*(?:❯\s*)?(?:\d+\.\s*)?No,? exit\s*$/i;
+function trustDialog(text) {
+  const lines = text.split('\n');
+  return lines.some(l => TRUST_YES.test(l)) && lines.some(l => TRUST_NO.test(l));
+}
 const TRUST_WAIT_MS = 30_000;
 
 async function trustPromptShown(name) {
   const vis = await tmux('capture-pane', '-p', '-t', `=${name}:`);
-  return vis.ok && TRUST_PROMPT.test(vis.out);
+  return vis.ok && trustDialog(vis.out);
 }
 
 async function acceptTrust(name) {
@@ -1017,7 +1023,7 @@ async function acceptTrust(name) {
     const vis = await tmux('capture-pane', '-p', '-t', target);
     if (!vis.ok) return 'unanswered';
     const lines = vis.out.split('\n');
-    if (!TRUST_PROMPT.test(vis.out)) {
+    if (!trustDialog(vis.out)) {
       // An empty input line means the session is ready and never asked.
       if (moves === 0 && /^\s*❯\s*$/m.test(vis.out)) return 'none';
       if (moves > 0) return 'accepted';
