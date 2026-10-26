@@ -803,9 +803,10 @@ async function peek(name, lines = 0, scrollback = 0) {
   // it lists "● main" and one row per running agent. Killing the session now
   // would kill that work.
   else if (/·\s*\d+\s+(?:shells?|agents?)\s*·|^\s*●\s+main\s*$/m.test(vis.out)) status = 'background';
-  // The TUI renders choice dialogs (trust, permissions, plan approval) as a
-  // numbered list with a ❯ cursor — that's the "waiting on you" signal.
-  if (/❯\s*\d+\.\s/.test(vis.out)) status = 'attention';
+  // The TUI renders choice dialogs (permissions, plan approval) as a numbered
+  // list with a ❯ cursor — that's the "waiting on you" signal. The folder
+  // trust dialog has no numbers, and typed text there picks "No, exit".
+  if (/❯\s*\d+\.\s/.test(vis.out) || TRUST_PROMPT.test(vis.out)) status = 'attention';
 
   let out = vis.out;
   if (scrollback > 0) {
@@ -1002,6 +1003,11 @@ const TRUST_PROMPT = /trust this folder/i;
 const TRUST_YES = /\bYes,? I trust\b/i;
 const TRUST_WAIT_MS = 30_000;
 
+async function trustPromptShown(name) {
+  const vis = await tmux('capture-pane', '-p', '-t', `=${name}:`);
+  return vis.ok && TRUST_PROMPT.test(vis.out);
+}
+
 async function acceptTrust(name) {
   const target = `=${name}:`;
   const until = Date.now() + TRUST_WAIT_MS;
@@ -1043,10 +1049,13 @@ async function relaunch(name, { account = null, killJobs = false, trust = false 
     const s = sessions.find(x => x.name === name);
     if (!s) throw httpError(404, 'no such session');
     const { status } = await peek(name);
-    if (status !== 'idle' && !(status === 'background' && killJobs)) {
+    // A session stuck on the trust prompt has no conversation running yet, so
+    // restarting it with trust loses nothing.
+    const onTrust = trust && status === 'attention' && await trustPromptShown(name);
+    if (status !== 'idle' && !(status === 'background' && killJobs) && !onTrust) {
       throw httpError(409, `session is ${status} — restart it when it is idle`);
     }
-    if (await promptDraft(name) !== '') throw httpError(409, 'input box not empty');
+    if (!onTrust && await promptDraft(name) !== '') throw httpError(409, 'input box not empty');
     const oldHome = sessionHome(s);
     let configDir = s.configDir ?? undefined;
     if (account && account !== s.account) configDir = await accountConfigDir(account);

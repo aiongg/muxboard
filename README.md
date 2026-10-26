@@ -123,7 +123,9 @@ sessions that only run background shells or agents. A session cannot restart
 itself.
 
 `--trust` (on `new` and `restart`) answers Claude Code's "trust this folder"
-prompt, which appears the first time an account opens a folder. Muxboard reads
+prompt, which appears the first time an account opens a folder; a session
+already waiting on that prompt shows as `attention` and can be restarted with
+`--trust`. Muxboard reads
 the screen and moves the cursor to the "Yes, I trust" option before pressing
 Enter, so it does not depend on the order of the options. The command reports
 when the prompt could not be answered.
