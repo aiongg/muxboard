@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Command-line control of a running Muxboard over its Unix socket.
 //   muxboard ls [--json]
-//   muxboard new [--account NAME] [--name NAME] [--trust] DIR
-//   muxboard restart [--account NAME] [--kill-jobs] [--trust] SESSION...
+//   muxboard new [--account NAME] [--name NAME] [--effort LEVEL] [--trust] DIR
+//   muxboard restart [--account NAME] [--effort LEVEL] [--kill-jobs] [--trust] SESSION...
 //   muxboard watch [--once] [--json] [--interval SECONDS] [SESSION...]
 // new and restart work only from a session whose "may manage sessions" switch
 // is on.
@@ -16,8 +16,8 @@ const SOCKET = join(process.env.XDG_RUNTIME_DIR ||
 
 const USAGE = `usage:
   muxboard ls [--json]
-  muxboard new [--account NAME] [--name NAME] [--trust] DIR
-  muxboard restart [--account NAME] [--kill-jobs] [--trust] SESSION...
+  muxboard new [--account NAME] [--name NAME] [--effort LEVEL] [--trust] DIR
+  muxboard restart [--account NAME] [--effort LEVEL] [--kill-jobs] [--trust] SESSION...
   muxboard watch [--once] [--json] [--interval SECONDS] [SESSION...]
 
 new starts a Claude Code session in DIR (under ~), named after the folder
@@ -27,6 +27,9 @@ restart relaunches each idle session under its name. In its own account it
 resumes the conversation; with --account set to another account it starts a
 new conversation and sends nothing. --kill-jobs also restarts sessions that
 only run background shells or agents, killing those jobs.
+
+--effort starts the session with that effort level (low, medium, high, xhigh or
+max). Without it, Claude Code uses its own default.
 
 --trust answers yes when the new process asks whether to trust the folder.
 
@@ -73,32 +76,34 @@ const trustNote = t => t === 'accepted' ? ', folder trusted'
   : t === 'unanswered' ? ', trust prompt not answered — check the session' : '';
 
 async function create(args) {
-  let account = null, name = null, trust = false, dir = null;
+  let account = null, name = null, effort = null, trust = false, dir = null;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--account') account = args[++i];
     else if (args[i] === '--name') name = args[++i];
+    else if (args[i] === '--effort') effort = args[++i];
     else if (args[i] === '--trust') trust = true;
     else if (args[i].startsWith('-') || dir !== null) throw new Error(`unexpected ${args[i]}\n${USAGE}`);
     else dir = args[i];
   }
   if (!dir || account === undefined || name === undefined) throw new Error(USAGE);
-  const r = await call('POST', '/new', { pane: process.env.TMUX_PANE, dir: resolve(dir), name, account, trust });
+  const r = await call('POST', '/new', { pane: process.env.TMUX_PANE, dir: resolve(dir), name, account, effort, trust });
   console.log(`${r.name}: started${account ? ` in ${account}` : ''}${trustNote(r.trust)}`);
   if (r.trust === 'unanswered') process.exitCode = 1;
 }
 
 async function restart(args) {
   const names = [];
-  let account = null, killJobs = false, trust = false;
+  let account = null, effort = null, killJobs = false, trust = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--account') account = args[++i];
+    else if (args[i] === '--effort') effort = args[++i];
     else if (args[i] === '--kill-jobs') killJobs = true;
     else if (args[i] === '--trust') trust = true;
     else if (args[i].startsWith('-')) throw new Error(`unknown option ${args[i]}\n${USAGE}`);
     else names.push(args[i]);
   }
   if (!names.length || (account !== null && !account)) throw new Error(USAGE);
-  const { results } = await call('POST', '/restart', { pane: process.env.TMUX_PANE, names, account, killJobs, trust });
+  const { results } = await call('POST', '/restart', { pane: process.env.TMUX_PANE, names, account, effort, killJobs, trust });
   let failed = false;
   for (const r of results) {
     if (r.error) { failed = true; console.log(`${r.name}: not restarted — ${r.error}`); continue; }

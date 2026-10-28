@@ -961,7 +961,14 @@ function expandDir(dir) {
 
 // configDir pins the account (CLAUDE_CONFIG_DIR, '' for the default one);
 // left undefined, the session gets whatever the login shell sets.
-async function createSession({ dir, name, cont, resume, configDir }) {
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+function cleanEffort(v) {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (!EFFORTS.includes(v)) throw httpError(400, `effort must be one of ${EFFORTS.join(', ')}`);
+  return v;
+}
+
+async function createSession({ dir, name, cont, resume, configDir, effort }) {
   const target = expandDir(dir);
   const base = sanitizeName(name) || sanitizeName(basename(target)) || 'session';
   if (base.startsWith('muxboard-login')) throw httpError(400, 'that session name is reserved');
@@ -974,7 +981,8 @@ async function createSession({ dir, name, cont, resume, configDir }) {
   // --name titles the conversation; the Remote Control session takes its name
   // only from --remote-control's own argument. A fresh session falls back to
   // --name, but a resumed one doesn't, so both get it.
-  const cmd = `${account}exec ${shq(CLAUDE_BIN)} ${resumeFlag}--remote-control ${shq(rcName)} --name ${shq(rcName)}`;
+  const effortFlag = effort ? `--effort ${effort} ` : '';
+  const cmd = `${account}exec ${shq(CLAUDE_BIN)} ${resumeFlag}${effortFlag}--remote-control ${shq(rcName)} --name ${shq(rcName)}`;
   const res = await tmux('new-session', '-d', '-s', finalName, '-c', target, '/bin/zsh', '-lc', cmd);
   if (!res.ok) throw httpError(500, res.err);
   return { name: finalName, rcName };
@@ -1123,7 +1131,7 @@ async function acceptTrust(name) {
 // A session whose only activity is background shells or agents restarts only
 // when the user agreed to kill them (killJobs). trust answers the folder trust
 // prompt the relaunched session may show.
-async function relaunch(name, { account = null, killJobs = false, trust = false } = {}) {
+async function relaunch(name, { account = null, killJobs = false, trust = false, effort } = {}) {
   if (relaunching.has(name)) throw httpError(409, 'already restarting');
   relaunching.add(name);
   try {
@@ -1153,7 +1161,7 @@ async function relaunch(name, { account = null, killJobs = false, trust = false 
     await killSession(name);
     let made;
     try {
-      made = await createSession({ dir: target, name, configDir, resume: saved && !moved ? uuid : undefined });
+      made = await createSession({ dir: target, name, configDir, effort, resume: saved && !moved ? uuid : undefined });
     } catch (err) {
       // Put the conversation back where it was rather than leave nothing running.
       try {
@@ -1908,12 +1916,13 @@ const controlServer = createServer(async (req, res) => {
       const names = Array.isArray(body.names) ? [...new Set(body.names.map(String))] : [];
       if (!names.length) throw httpError(400, 'no sessions named');
       const account = body.account ? String(body.account) : null;
+      const effort = cleanEffort(body.effort);
       const results = [];
       // One at a time: each relaunch lists and peeks every session.
       for (const name of names) {
         if (name === caller) { results.push({ name, error: 'a session cannot restart itself' }); continue; }
         try {
-          results.push({ name, ...await relaunch(name, { account, killJobs: body.killJobs === true, trust: body.trust === true }) });
+          results.push({ name, ...await relaunch(name, { account, killJobs: body.killJobs === true, trust: body.trust === true, effort }) });
         } catch (err) {
           results.push({ name, error: err.message });
         }
@@ -1932,7 +1941,7 @@ const controlServer = createServer(async (req, res) => {
       const body = await readBody(req);
       await allowedCaller(body.pane);
       const configDir = body.account ? await accountConfigDir(String(body.account)) : undefined;
-      const made = await createSession({ dir: body.dir, name: body.name, configDir });
+      const made = await createSession({ dir: body.dir, name: body.name, configDir, effort: cleanEffort(body.effort) });
       const out = { name: made.name };
       if (body.trust === true) out.trust = await acceptTrust(made.name);
       return json(res, 200, out);

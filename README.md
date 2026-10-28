@@ -111,6 +111,7 @@ list and restart sessions:
 muxboard ls                      # each session's account and status
 muxboard new --account b --trust ~/code/craft-z
 muxboard restart --account b craft-x craft-y
+muxboard new --effort high ~/code/craft-z
 muxboard watch                   # report sessions that wait for input
 ```
 
@@ -122,6 +123,10 @@ account it resumes the conversation, in another it starts a new one and sends
 nothing, and it refuses sessions that are not idle. `--kill-jobs` also restarts
 sessions that only run background shells or agents. A session cannot restart
 itself.
+
+`--effort LEVEL` (on `new` and `restart`; `low`, `medium`, `high`, `xhigh` or
+`max`) launches Claude Code with `--effort LEVEL`. A restart without it uses
+Claude Code's default effort.
 
 `--trust` (on `new` and `restart`) answers Claude Code's "trust this folder"
 prompt, which appears the first time an account opens a folder; a session
