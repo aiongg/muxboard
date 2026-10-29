@@ -24,7 +24,12 @@ README.md). The server drives everything through the tmux CLI: `list-panes` for
 discovery, `capture-pane` for the terminal screen, `send-keys` for input
 injection (pane targets use the `=name:` exact-match form; named keys such as
 arrows go through the `KEYS` whitelist in `server.mjs`). Session and Claude
-version detection read `/proc`, which is why this is Linux-only.
+version detection read `/proc` on Linux; on macOS (`IS_MAC`) the same readers
+use one `ps` snapshot per listing for the process tree, `ps -E` for a process's
+`CLAUDE_CONFIG_DIR`, `lsof` for its exe, `ps -o lstart=` in UTC for the start
+time Claude Code records, and `sysctl kern.bootsessionuuid` for the boot id.
+`list-panes -F` fields are tab-separated because tmux 3.5 escapes other
+control characters in format output.
 
 The client is a list → detail UI: `#rows` in the list pane, one `#detailBody`
 for the selected session, `data-view` on the shell switching panes on narrow

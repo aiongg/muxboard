@@ -2,7 +2,7 @@
 // Muxboard — manage Claude Code sessions living in tmux, from a phone.
 // Zero runtime dependencies. Serves the PWA and a small JSON API on localhost.
 
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
 import { readFile, readdir, stat, mkdir, writeFile, rm, chmod, open as openFile } from 'node:fs/promises';
@@ -12,6 +12,8 @@ import { homedir, hostname } from 'node:os';
 import { scryptSync, randomBytes, createHmac, timingSafeEqual } from 'node:crypto';
 
 const exec = promisify(execFile);
+// macOS has no /proc; the process readers below use ps, lsof and sysctl there.
+const IS_MAC = process.platform === 'darwin';
 
 const PORT = Number(process.env.PORT || 8800);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -279,7 +281,9 @@ async function tmux(...args) {
   }
 }
 
-const SEP = '\x1f';
+// A tab: tmux 3.5 prints other control characters in -F output as octal
+// escapes (\x1f comes out as the four characters "\037").
+const SEP = '\t';
 
 // A "muxboard session" is any tmux session whose active pane is running Claude Code.
 // ------------------------------------------------------------- hook status
@@ -333,6 +337,7 @@ async function listSessions() {
   const res = await tmux('list-panes', '-a', '-F', fmt);
   if (!res.ok) return { tmuxRunning: false, sessions: [] };
 
+  const procs = await procTable();
   const sessions = [];
   const seen = new Set();
   // A server holding only login sessions counts as not running, so a login
@@ -348,7 +353,7 @@ async function listSessions() {
       continue;
     }
     tmuxRunning = true;
-    const claude = findClaudeProcess(Number(panePid));
+    const claude = findClaudeProcess(Number(panePid), procs);
     if (!claude && cmd !== 'claude') continue;
     seen.add(name);
     const pid = claude ? claude.pid : Number(panePid);
@@ -370,25 +375,45 @@ async function listSessions() {
   }
   const pids = new Set(sessions.map(s => s.pid));
   for (const pid of configDirCache.keys()) if (!pids.has(pid)) configDirCache.delete(pid);
+  for (const pid of exeVersionCache.keys()) if (!pids.has(pid)) exeVersionCache.delete(pid);
   sessions.sort((a, b) => b.createdAt - a.createdAt);
   return { tmuxRunning, sessions };
 }
 
+// macOS: one ps snapshot per listing (pid → parent and argv) stands in for
+// /proc. Arguments are split on whitespace, which is lossy for arguments with
+// spaces; procInfo() only looks at the binary and flags. null on Linux.
+async function procTable() {
+  if (!IS_MAC) return null;
+  const table = new Map();
+  try {
+    const { stdout } = await exec('ps', ['-axww', '-o', 'pid=,ppid=,args='], { maxBuffer: 16 << 20 });
+    for (const line of stdout.split('\n')) {
+      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+      if (m) table.set(Number(m[1]), { ppid: Number(m[2]), args: m[3].trim().split(/\s+/) });
+    }
+  } catch { /* an empty table finds no claude, like an unreadable /proc */ }
+  return table;
+}
+
 // Walk the pane's process tree looking for the claude binary.
-function findClaudeProcess(rootPid, depth = 0) {
+function findClaudeProcess(rootPid, procs, depth = 0) {
   if (!rootPid || depth > 4) return null;
-  const info = procInfo(rootPid);
+  const info = procInfo(rootPid, procs);
   if (info && info.isClaude) return info;
-  for (const child of procChildren(rootPid)) {
-    const found = findClaudeProcess(child, depth + 1);
+  for (const child of procChildren(rootPid, procs)) {
+    const found = findClaudeProcess(child, procs, depth + 1);
     if (found) return found;
   }
   return null;
 }
 
-function procInfo(pid) {
+function procInfo(pid, procs) {
   try {
-    const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+    const cmdline = procs
+      ? procs.get(pid)?.args
+      : readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+    if (!cmdline) return null;
     const exe = cmdline[0] || '';
     const isClaude = /(^|\/)claude(\s|$)/.test(exe) || cmdline.slice(0, 2).some(a => a.endsWith('/claude'));
     return { pid, isClaude, remoteControl: cmdline.includes('--remote-control') };
@@ -397,8 +422,12 @@ function procInfo(pid) {
   }
 }
 
-function procChildren(pid) {
+function procChildren(pid, procs) {
   const kids = [];
+  if (procs) {
+    for (const [child, p] of procs) if (p.ppid === pid) kids.push(child);
+    return kids;
+  }
   try {
     for (const tid of readdirSync(`/proc/${pid}/task`)) {
       const data = readFileSync(`/proc/${pid}/task/${tid}/children`, 'utf8').trim();
@@ -411,11 +440,20 @@ function procChildren(pid) {
 // The native install launches a per-version binary (~/.local/share/claude/
 // versions/<v>), so a running process's exe link names the exact version it
 // is still executing — even after that file was deleted by an update.
+// macOS asks lsof for the exe once per pid (~25 ms) and caches it, since a
+// process's exe never changes.
+const exeVersionCache = new Map(); // pid → version, macOS only
 function claudeExeVersion(pid) {
   try {
-    return versionFromPath(readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, ''));
+    if (!IS_MAC) return versionFromPath(readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, ''));
+    if (!exeVersionCache.has(pid)) {
+      const out = execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'txt', '-Fn'], { encoding: 'utf8' });
+      const exe = out.split('\n').find(l => l.startsWith('n'))?.slice(1) || '';
+      exeVersionCache.set(pid, versionFromPath(exe));
+    }
+    return exeVersionCache.get(pid);
   } catch {
-    return null;
+    return null; // not cached: the process may have exited, or lsof failed once
   }
 }
 
@@ -447,12 +485,20 @@ const ACTIVE_TTL_MS = 10_000;
 const configDirCache = new Map();
 
 // Only CLAUDE_CONFIG_DIR is kept; every other variable is discarded on the spot.
+// On macOS, `ps -E` appends the exec-time environment to the command line,
+// space-separated, so a value containing a space is cut at it; the last match
+// is the environment's, after any argument that looks like one.
 function processConfigDir(pid) {
   if (configDirCache.has(pid)) return configDirCache.get(pid);
   let dir = '';
   try {
-    for (const entry of readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0')) {
-      if (entry.startsWith('CLAUDE_CONFIG_DIR=')) { dir = entry.slice('CLAUDE_CONFIG_DIR='.length); break; }
+    if (IS_MAC) {
+      const out = execFileSync('ps', ['-wwE', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+      dir = [...out.matchAll(/(?:^| )CLAUDE_CONFIG_DIR=(\S*)/g)].at(-1)?.[1] ?? '';
+    } else {
+      for (const entry of readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0')) {
+        if (entry.startsWith('CLAUDE_CONFIG_DIR=')) { dir = entry.slice('CLAUDE_CONFIG_DIR='.length); break; }
+      }
     }
   } catch {
     return null; // not cached: the next poll may be able to read it
@@ -1032,14 +1078,24 @@ function sessionUuid(pid, cwd, home = DEFAULT_CLAUDE_HOME) {
   if (reg.cwd && cwd && reg.cwd !== cwd) return null;
   if (reg.procStart) {
     try {
-      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-      const starttime = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
-      if (String(starttime) !== String(reg.procStart)) return null;
+      if (procStart(pid) !== String(reg.procStart).replace(/\s+/g, ' ').trim()) return null;
     } catch {
       return null;
     }
   }
   return reg.sessionId;
+}
+
+// The start time in the form Claude Code records as procStart: clock ticks
+// since boot on Linux; on macOS, ps's lstart in UTC ("Thu Oct 29 03:47:11 2026").
+function procStart(pid) {
+  if (IS_MAC) {
+    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)],
+      { encoding: 'utf8', env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' } });
+    return out.replace(/\s+/g, ' ').trim();
+  }
+  const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
 }
 
 // Roll a session over to a fresh context instead of paying to revive the old
@@ -1484,8 +1540,10 @@ function processRestarts(peeked) {
 // ------------------------------------------------------- snapshot & restore
 
 function bootId() {
-  try { return readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(); }
-  catch { return 'unknown'; }
+  try {
+    if (IS_MAC) return execFileSync('sysctl', ['-n', 'kern.bootsessionuuid'], { encoding: 'utf8' }).trim();
+    return readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+  } catch { return 'unknown'; }
 }
 
 let snapshotCache = null;

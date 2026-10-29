@@ -178,8 +178,8 @@ minutes without an event, because an interrupted turn sends no `Stop`.
 
 ## Requirements
 
-- **Linux.** Session and version detection read `/proc`, so macOS is not
-  supported (parts of the UI will simply come up empty there).
+- **Linux or macOS.** Session and version detection read `/proc` on Linux and
+  use `ps`, `lsof` and `sysctl` on macOS.
 - **Node.js 20+** — no runtime dependencies, no build step.
 - **tmux 3.x** — pane targets use the `=name:` exact-match form.
 - **Claude Code** installed for the same user, with a Claude account that can
@@ -341,6 +341,41 @@ WantedBy=default.target
 ```sh
 systemctl --user enable --now muxboard
 loginctl enable-linger "$USER"     # keep it running when you log out
+```
+
+On macOS, a launchd agent. Replace `you` with your user name and the node path
+with `command -v node`:
+
+```xml
+<!-- ~/Library/LaunchAgents/muxboard.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>muxboard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/you/muxboard/server.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/you/muxboard</string>
+  <!-- launchd's PATH lacks Homebrew, where tmux lives. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PORT</key><string>8800</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <!-- Like KillMode=process: stopping Muxboard must not take tmux with it. -->
+  <key>AbandonProcessGroup</key><true/>
+</dict>
+</plist>
+```
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/muxboard.plist
+launchctl kickstart -k gui/$(id -u)/muxboard   # restart after a change
 ```
 
 ## Reaching it from your phone
